@@ -113,8 +113,8 @@ def convert_units(value: float, from_unit: str, to_unit: str) -> str:
 
 
 def main():
-    """Run the mock MCP server via stdio."""
-    mcp.run()
+    """Run the mock MCP server via SSE on port 8010."""
+    mcp.run(transport="sse", host="0.0.0.0", port=8010)
 
 
 if __name__ == "__main__":

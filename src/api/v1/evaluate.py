@@ -6,7 +6,7 @@ from datetime import datetime
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 
 from src.storage.models import (
     EvaluateRequest,
@@ -21,7 +21,13 @@ from src.core.evaluator import Evaluator
 from src.core.llm_judge import LLMJudge
 from src.core.attestation import create_attestation
 from src.core.scoring import aggregate_scores
-from src.core.question_pools import determine_tier
+from src.core import mcp_client
+from src.auth.dependencies import get_api_key
+from src.auth.rate_limiter import (
+    check_eval_rate_limit,
+    is_eval_level_allowed,
+    add_rate_limit_headers,
+)
 from src.config import settings
 
 logger = logging.getLogger(__name__)
@@ -45,8 +51,29 @@ def _get_judge() -> LLMJudge:
 async def submit_evaluation(
     request: EvaluateRequest,
     background_tasks: BackgroundTasks,
+    response: Response,
+    api_key_doc: dict = Depends(get_api_key),
 ):
     """Submit an MCP server or agent for quality evaluation."""
+    tier = api_key_doc.get("tier", "free")
+    key_hash = api_key_doc["_id"]
+
+    # Check evaluation level is allowed for this tier
+    if not is_eval_level_allowed(tier, request.level.value):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Evaluation level {request.level.value} not available for '{tier}' tier",
+        )
+
+    # Check rate limit
+    allowed, remaining, limit = await check_eval_rate_limit(key_hash, tier)
+    add_rate_limit_headers(response, tier, limit, remaining)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Monthly evaluation limit exceeded. Upgrade your tier.",
+        )
+
     evaluation_id = str(uuid4())
     target_id = request.target_url  # Use URL as target_id for now
 
@@ -83,7 +110,10 @@ async def submit_evaluation(
 
 
 @router.get("/evaluate/{evaluation_id}", response_model=EvaluationStatus)
-async def get_evaluation_status(evaluation_id: str):
+async def get_evaluation_status(
+    evaluation_id: str,
+    api_key_doc: dict = Depends(get_api_key),
+):
     """Check the status of an evaluation and get full report when completed."""
     doc = await evaluations_col().find_one({"_id": evaluation_id})
     if not doc:
@@ -147,10 +177,27 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         judge = _get_judge()
         evaluator = Evaluator(judge)
 
-        # Level 1: Manifest validation
-        # TODO: Fetch manifest via MCP Client (Strategy A: SSE/HTTP)
-        manifest = {"name": "test", "tools": [], "version": "0.1.0"}
+        # Step 1: Fetch real manifest from MCP server
+        try:
+            manifest = await mcp_client.get_server_manifest(request.target_url)
+        except ConnectionError as e:
+            logger.error(f"Cannot connect to target: {e}")
+            await evaluations_col().update_one(
+                {"_id": evaluation_id},
+                {"$set": {
+                    "status": EvalStatus.FAILED.value,
+                    "error": f"Connection failed: {e}",
+                }},
+            )
+            return
 
+        # Store manifest in evaluation doc
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {"target_manifest": manifest}},
+        )
+
+        # Step 2: Level 1 — Manifest validation
         manifest_result = evaluator.validate_manifest(manifest)
         await evaluations_col().update_one(
             {"_id": evaluation_id},
@@ -158,12 +205,13 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         )
 
         if request.level == EvalLevel.MANIFEST:
-            scores = {
-                "overall_score": manifest_result.score,
-                "tier": determine_tier(manifest_result.score),
-                "confidence": 0.5,
-                "manifest": manifest_result.to_dict(),
-            }
+            # Level 1 only: aggregate with manifest score only
+            scores = aggregate_scores(
+                tool_scores={},
+                manifest_score=manifest_result.score,
+            )
+            scores["confidence"] = 0.5
+            scores["manifest"] = manifest_result.to_dict()
             report = {
                 "level1": {
                     "manifest_score": manifest_result.score,
@@ -174,16 +222,93 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 "level3": None,
             }
         else:
-            # Level 2+: Functional testing
-            # TODO: Connect to MCP server, call tools, collect responses
-            scores = {
-                "overall_score": manifest_result.score,
-                "tier": determine_tier(manifest_result.score),
-                "confidence": 0.5,
-                "manifest": manifest_result.to_dict(),
-                "tool_scores": {},
-                "questions_asked": 0,
-            }
+            # Step 3: Level 2 — Functional testing via real MCP calls
+            await evaluations_col().update_one(
+                {"_id": evaluation_id},
+                {"$set": {"progress_pct": 40}},
+            )
+
+            tool_responses = await mcp_client.evaluate_server(request.target_url)
+
+            await evaluations_col().update_one(
+                {"_id": evaluation_id},
+                {"$set": {"progress_pct": 60}},
+            )
+
+            # Judge the tool responses
+            eval_result = await evaluator.evaluate_functional(
+                target_id=request.target_url,
+                tool_responses=tool_responses,
+                manifest=manifest,
+            )
+
+            await evaluations_col().update_one(
+                {"_id": evaluation_id},
+                {"$set": {"progress_pct": 75}},
+            )
+
+            # Step 4: Level 3 — Domain expert testing (if requested)
+            domain_result = None
+            if request.level == EvalLevel.DOMAIN_EXPERT and request.domains:
+                async def answer_fn(question: str) -> str:
+                    """Ask a domain question via the first available tool."""
+                    tools = manifest.get("tools", [])
+                    if not tools:
+                        return ""
+                    # Use the first tool that looks like it can answer questions
+                    tool_name = tools[0]["name"]
+                    resp = await mcp_client.call_tool(
+                        request.target_url, tool_name, {"query": question}
+                    )
+                    return resp.get("content", "")
+
+                domain_result = await evaluator.evaluate_domain(
+                    target_id=request.target_url,
+                    domains=request.domains,
+                    answer_fn=answer_fn,
+                    question_count=10,
+                )
+
+            await evaluations_col().update_one(
+                {"_id": evaluation_id},
+                {"$set": {"progress_pct": 85}},
+            )
+
+            # Step 5: Aggregate scores with proper weights
+            scores = aggregate_scores(
+                tool_scores=eval_result.tool_scores,
+                domain_scores=domain_result.domain_scores if domain_result else None,
+                manifest_score=manifest_result.score,
+            )
+            scores["confidence"] = eval_result.confidence
+            scores["manifest"] = manifest_result.to_dict()
+            scores["tool_scores"] = eval_result.tool_scores
+            scores["questions_asked"] = eval_result.questions_asked
+            if domain_result:
+                scores["domain_scores"] = domain_result.domain_scores
+
+            # Build comprehensive report with tool details
+            # Compute per-tool latency from tool_responses
+            tool_details = []
+            all_latencies = []
+            tools_passed = 0
+            for tool_name, responses in tool_responses.items():
+                latencies = [r.get("latency_ms", 0) for r in responses]
+                all_latencies.extend(latencies)
+                tool_score = eval_result.tool_scores.get(tool_name, {})
+                passed = tool_score.get("tests_passed", 0)
+                total = tool_score.get("tests_total", 0)
+                if passed == total and total > 0:
+                    tools_passed += 1
+                tool_details.append({
+                    "tool_name": tool_name,
+                    "score": tool_score.get("score", 0),
+                    "tests_passed": passed,
+                    "tests_total": total,
+                    "avg_latency_ms": int(sum(latencies) / len(latencies)) if latencies else 0,
+                    "responses": responses,
+                })
+
             report = {
                 "level1": {
                     "manifest_score": manifest_result.score,
@@ -191,13 +316,18 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                     "issues": manifest_result.warnings,
                 },
                 "level2": {
-                    "tools_tested": 0,
-                    "tools_passed": 0,
-                    "tools_failed": 0,
-                    "avg_latency_ms": 0,
-                    "tool_details": [],
+                    "tools_tested": len(tool_responses),
+                    "tools_passed": tools_passed,
+                    "tools_failed": len(tool_responses) - tools_passed,
+                    "avg_latency_ms": int(sum(all_latencies) / len(all_latencies)) if all_latencies else 0,
+                    "tool_details": tool_details,
+                    "judge_responses": eval_result.judge_responses,
                 },
-                "level3": None,
+                "level3": {
+                    "domain_scores": domain_result.domain_scores,
+                    "questions_asked": domain_result.questions_asked,
+                    "judge_responses": domain_result.judge_responses,
+                } if domain_result else None,
             }
 
         now = datetime.utcnow()

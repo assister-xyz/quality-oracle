@@ -1,17 +1,21 @@
 """Attestation endpoints — JWT (Phase 1), W3C VC (Phase 2, Week 5+)."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from src.storage.mongodb import attestations_col
 from src.core.attestation import verify_attestation as verify_jwt
 from src.storage.cache import (
     cache_attestation_verify,
     get_cached_attestation_verify,
 )
+from src.auth.dependencies import get_api_key
 
 router = APIRouter()
 
 
 @router.get("/attestation/{attestation_id}")
-async def get_attestation(attestation_id: str):
+async def get_attestation(
+    attestation_id: str,
+    api_key_doc: dict = Depends(get_api_key),
+):
     """Get a signed JWT quality attestation."""
     doc = await attestations_col().find_one({"_id": attestation_id})
     if not doc:
@@ -29,7 +33,10 @@ async def get_attestation(attestation_id: str):
 
 
 @router.get("/attestation/{attestation_id}/verify")
-async def verify_attestation_endpoint(attestation_id: str):
+async def verify_attestation_endpoint(
+    attestation_id: str,
+    api_key_doc: dict = Depends(get_api_key),
+):
     """Verify the validity of a JWT quality attestation."""
     # Check cache first (24h TTL)
     cached = await get_cached_attestation_verify(attestation_id)

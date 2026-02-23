@@ -1,17 +1,21 @@
 """Agent Card enrichment endpoint — add quality data to A2A Agent Cards."""
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from src.storage.models import EnrichAgentCardRequest, EnrichAgentCardResponse
 from src.storage.mongodb import scores_col
+from src.auth.dependencies import get_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/enrich-agent-card", response_model=EnrichAgentCardResponse)
-async def enrich_agent_card(request: EnrichAgentCardRequest):
+async def enrich_agent_card(
+    request: EnrichAgentCardRequest,
+    api_key_doc: dict = Depends(get_api_key),
+):
     """
     Add quality data to an A2A Agent Card.
 
