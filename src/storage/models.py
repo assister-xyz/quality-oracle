@@ -168,3 +168,49 @@ class ScoreHistoryDoc(BaseModel):
     domain_scores: Dict[str, int] = {}
     recorded_at: datetime = Field(default_factory=datetime.utcnow)
     delta_from_previous: Optional[int] = None
+
+
+# ── Production Feedback ──────────────────────────────────────────────────────
+
+class FeedbackOutcome(str, Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    PARTIAL = "partial"
+
+
+class FeedbackRequest(BaseModel):
+    target_id: str
+    outcome: FeedbackOutcome
+    outcome_score: int = Field(ge=0, le=100)
+    context: Optional[str] = None
+    session_id: Optional[str] = None
+    details: Optional[str] = None
+
+
+class FeedbackResponse(BaseModel):
+    feedback_id: str
+    target_id: str
+    message: str = "Feedback recorded"
+
+
+class CorrelationResponse(BaseModel):
+    target_id: str
+    eval_score: int
+    production_score: int
+    correlation: Optional[float] = None
+    feedback_count: int
+    alignment: str
+    confidence_adjustment: float
+    sandbagging_risk: str
+    outcome_breakdown: Dict[str, int] = {}
+
+
+class FeedbackDoc(BaseModel):
+    target_id: str
+    outcome: FeedbackOutcome
+    outcome_score: int = 0
+    context: Optional[str] = None
+    session_id: Optional[str] = None
+    details: Optional[str] = None
+    submitted_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

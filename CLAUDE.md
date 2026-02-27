@@ -19,6 +19,7 @@
 - **Level 3 (Domain Expert):** Calibrated question bank with weighted scoring
 
 6-axis scoring: accuracy(35%), safety(20%), process_quality(10%), reliability(15%), latency(10%), schema_quality(10%).
+Production correlation: POST /v1/feedback → GET /v1/correlation/{target_id} (anti-sandbagging, confidence adjustment).
 
 JWT attestation via Ed25519 (UAQA format). MCP SDK SSE + Streamable HTTP dual transport. A2A v0.3 compliant Agent Card. Webhook-first async delivery for Level 2+.
 
