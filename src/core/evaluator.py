@@ -461,6 +461,125 @@ class Evaluator:
 
         return result
 
+    async def enrich_with_dimensions(
+        self,
+        result: EvaluationResult,
+        tool_responses: Dict[str, List[dict]],
+        manifest: Optional[dict] = None,
+        server_url: str = "",
+        run_safety: bool = True,
+    ) -> EvaluationResult:
+        """Enrich an existing EvaluationResult with all 6 dimension scores.
+
+        Used to add dimensions after streaming evaluation completes.
+        Computes: safety, process_quality, reliability, latency, schema_quality.
+        Accuracy is already computed as overall_score from functional eval.
+
+        Args:
+            result: EvaluationResult from evaluate_functional or evaluate_functional_streaming
+            tool_responses: Dict of tool_name -> list of response dicts (with answer, is_error, latency_ms, test_type)
+            manifest: Server manifest for schema_quality and safety probes
+            server_url: MCP server URL for safety probes and consistency checks
+            run_safety: Whether to run adversarial safety probes
+        """
+        accuracy_score = result.overall_score
+        schema_score = result.manifest_result.score if result.manifest_result else 50
+
+        # Safety dimension — adversarial probes
+        safety_score = 50
+        if run_safety and manifest:
+            try:
+                from src.core.adversarial import run_safety_probes
+                tools = manifest.get("tools", [])
+                safety_report = await run_safety_probes(server_url, tools)
+                safety_score = safety_report.safety_score
+                result.safety_report = safety_report.to_dict()
+            except Exception as e:
+                logger.warning(f"Safety probes failed: {e}")
+
+        # Process quality dimension
+        process_quality_score = 50
+        if tool_responses:
+            try:
+                from src.core.process_quality import analyze_process_quality
+                pq_result = analyze_process_quality(tool_responses)
+                process_quality_score = pq_result.score
+                result.process_quality_report = pq_result.to_dict()
+            except Exception as e:
+                logger.warning(f"Process quality analysis failed: {e}")
+
+        # Latency dimension
+        all_latencies = []
+        for responses in tool_responses.values():
+            for resp in responses:
+                if not resp.get("is_error") and resp.get("latency_ms"):
+                    all_latencies.append(resp["latency_ms"])
+
+        if all_latencies:
+            sorted_lat = sorted(all_latencies)
+            p50 = sorted_lat[len(sorted_lat) // 2]
+            p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
+            p99 = sorted_lat[int(len(sorted_lat) * 0.99)]
+            result.latency_stats = {"p50_ms": p50, "p95_ms": p95, "p99_ms": p99}
+
+            latency_score = max(0, min(100, 100 - (p50 / 30)))
+            if p95 > 2 * p50:
+                latency_score *= 0.9
+            if p99 > 10000:
+                latency_score = min(latency_score, 40)
+            latency_score = int(round(latency_score))
+        else:
+            latency_score = 50
+
+        # Reliability dimension — actual response consistency
+        reliability_score = 50
+        if manifest and server_url:
+            try:
+                from src.core.mcp_client import check_response_consistency
+                tools = manifest.get("tools", [])
+                consistency = await check_response_consistency(server_url, tools, sample_size=2)
+                if consistency:
+                    avg_consistency = sum(consistency.values()) / len(consistency)
+                    if avg_consistency >= 0.9:
+                        reliability_score = 100
+                    elif avg_consistency >= 0.7:
+                        reliability_score = 80
+                    elif avg_consistency >= 0.5:
+                        reliability_score = 60
+                    elif avg_consistency >= 0.3:
+                        reliability_score = 40
+                    else:
+                        reliability_score = 20
+            except Exception as e:
+                logger.warning(f"Consistency check failed: {e}")
+
+        # Assemble dimensions
+        dimensions = {
+            "accuracy": {"score": accuracy_score, "weight": 0.35},
+            "safety": {"score": safety_score, "weight": 0.20},
+            "process_quality": {"score": process_quality_score, "weight": 0.10},
+            "reliability": {"score": reliability_score, "weight": 0.15},
+            "latency": {"score": latency_score, "weight": 0.10},
+            "schema_quality": {"score": schema_score, "weight": 0.10},
+        }
+        result.dimensions = dimensions
+
+        weighted_total = sum(d["score"] * d["weight"] for d in dimensions.values())
+        result.overall_score = int(round(weighted_total))
+        result.tier = determine_tier(result.overall_score)
+
+        # Recompute hash with new score
+        hash_data = f"{server_url}:{result.overall_score}:{result.questions_asked}:{int(time.time())}"
+        result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
+
+        logger.info(
+            f"Dimensions enriched: Overall={result.overall_score} | "
+            f"acc={accuracy_score} safe={safety_score} proc={process_quality_score} "
+            f"rel={reliability_score} lat={latency_score} schema={schema_score}"
+        )
+
+        return result
+
     async def evaluate_full(
         self,
         target_id: str,
@@ -533,40 +652,38 @@ class Evaluator:
             p99 = sorted_lat[int(len(sorted_lat) * 0.99)]
             result.latency_stats = {"p50_ms": p50, "p95_ms": p95, "p99_ms": p99}
 
-            # Score latency: <200ms=100, 200-500=80, 500-1000=60, 1000-3000=40, >3000=20
-            if p50 < 200:
-                latency_score = 100
-            elif p50 < 500:
-                latency_score = 80
-            elif p50 < 1000:
-                latency_score = 60
-            elif p50 < 3000:
-                latency_score = 40
-            else:
-                latency_score = 20
+            # Smooth continuous latency scoring (0-100) based on p50, with p95/p99 penalties
+            latency_score = max(0, min(100, 100 - (p50 / 30)))
+            if p95 > 2 * p50:
+                latency_score *= 0.9  # Tail latency penalty
+            if p99 > 10000:
+                latency_score = min(latency_score, 40)  # Catastrophic tail cap
+            latency_score = int(round(latency_score))
         else:
             latency_score = 50  # Neutral
 
-        # Reliability dimension — variance penalty
-        all_scores = []
-        for jr in result.judge_responses:
-            all_scores.append(jr["score"])
-
-        if len(all_scores) >= 3:
-            stdev = statistics.stdev(all_scores)
-            # Low variance = high reliability
-            if stdev < 10:
-                reliability_score = 100
-            elif stdev < 20:
-                reliability_score = 80
-            elif stdev < 30:
-                reliability_score = 60
-            elif stdev < 40:
-                reliability_score = 40
-            else:
-                reliability_score = 20
-        else:
-            reliability_score = 50  # Not enough data
+        # Reliability dimension — actual response consistency (idempotency check)
+        reliability_score = 50  # Neutral default
+        if manifest:
+            try:
+                from src.core.mcp_client import check_response_consistency
+                tools = manifest.get("tools", [])
+                consistency = await check_response_consistency(server_url, tools, sample_size=2)
+                if consistency:
+                    avg_consistency = sum(consistency.values()) / len(consistency)
+                    # Map consistency ratio to score
+                    if avg_consistency >= 0.9:
+                        reliability_score = 100
+                    elif avg_consistency >= 0.7:
+                        reliability_score = 80
+                    elif avg_consistency >= 0.5:
+                        reliability_score = 60
+                    elif avg_consistency >= 0.3:
+                        reliability_score = 40
+                    else:
+                        reliability_score = 20
+            except Exception as e:
+                logger.warning(f"Consistency check failed: {e}")
 
         # Multi-dimensional aggregate (6 axes, weighted)
         dimensions = {

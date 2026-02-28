@@ -20,11 +20,10 @@ x402 spec reference: https://x402.org
 Solana has 77% of x402 payment volume.
 """
 import logging
-from datetime import datetime
+import time as _time
 from typing import Optional
-from uuid import uuid4
 
-from fastapi import Header, HTTPException, Request
+from fastapi import HTTPException
 
 from src.payments.pricing import (
     PriceQuote,
@@ -74,21 +73,73 @@ def build_402_response(
     }
 
 
+# SOL price cache (5 min TTL)
+_sol_price_cache: dict = {"price": None, "fetched_at": 0.0}
+_SOL_PRICE_CACHE_TTL = 300  # 5 minutes
+
+
+async def _fetch_sol_price() -> float:
+    """Fetch SOL/USD price from Jupiter Price API v2 with 5-min cache.
+
+    Falls back to CoinGecko simple price API, then to a conservative default.
+    """
+    now = _time.time()
+    if _sol_price_cache["price"] and (now - _sol_price_cache["fetched_at"]) < _SOL_PRICE_CACHE_TTL:
+        return _sol_price_cache["price"]
+
+    import httpx
+
+    # Try Jupiter Price API v2 (free, no auth)
+    try:
+        sol_mint = "So11111111111111111111111111111111111111112"
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                f"https://api.jup.ag/price/v2?ids={sol_mint}"
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                price = float(data["data"][sol_mint]["price"])
+                _sol_price_cache["price"] = price
+                _sol_price_cache["fetched_at"] = now
+                logger.info(f"SOL price from Jupiter: ${price:.2f}")
+                return price
+    except Exception as e:
+        logger.warning(f"Jupiter price API failed: {e}")
+
+    # Fallback: CoinGecko simple price
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
+            )
+            if resp.status_code == 200:
+                price = float(resp.json()["solana"]["usd"])
+                _sol_price_cache["price"] = price
+                _sol_price_cache["fetched_at"] = now
+                logger.info(f"SOL price from CoinGecko: ${price:.2f}")
+                return price
+    except Exception as e:
+        logger.warning(f"CoinGecko price API failed: {e}")
+
+    # Return cached price if available, otherwise conservative default
+    if _sol_price_cache["price"]:
+        return _sol_price_cache["price"]
+    return 150.0  # Conservative fallback
+
+
 def _usd_to_token_amount(usd: float, token: str) -> str:
     """Convert USD amount to token base units (string for precision).
 
     For USDC: 1 USD = 1_000_000 base units (6 decimals)
-    For SOL: approximate at $150/SOL (will be dynamic in production)
+    For SOL: uses cached Jupiter/CoinGecko price (sync version with cached value)
     """
     token_info = ACCEPTED_TOKENS.get(token, {})
     decimals = token_info.get("decimals", 6)
 
     if token == "USDC":
-        # 1:1 with USD
         return str(int(usd * (10 ** decimals)))
     elif token == "SOL":
-        # Approximate conversion (production would use price oracle)
-        sol_price = 150.0  # Placeholder — use Pyth/Switchboard in production
+        sol_price = _sol_price_cache.get("price") or 150.0
         sol_amount = usd / sol_price
         return str(int(sol_amount * (10 ** decimals)))
     else:
@@ -119,6 +170,27 @@ def parse_payment_header(header_value: str) -> dict:
 
 # ── Payment Verification ─────────────────────────────────────────────────────
 
+_BASE58_CHARS = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+
+
+def _is_valid_base58(s: str) -> bool:
+    """Check if a string contains only valid base58 characters."""
+    return all(c in _BASE58_CHARS for c in s)
+
+
+def _is_valid_solana_signature(tx_signature: str) -> bool:
+    """Validate a Solana transaction signature format.
+
+    A real Solana tx signature is 86-88 base58 characters.
+    """
+    if not tx_signature:
+        return False
+    # Solana signatures are typically 87-88 base58 chars
+    if not (64 <= len(tx_signature) <= 90):
+        return False
+    return _is_valid_base58(tx_signature)
+
+
 async def verify_payment(
     tx_signature: str,
     expected_amount_usd: float,
@@ -127,15 +199,13 @@ async def verify_payment(
 ) -> PaymentReceipt:
     """Verify a payment transaction.
 
-    In production, this would:
-    1. Query Solana RPC for the transaction
-    2. Verify recipient matches our receiver address
-    3. Verify amount >= expected
-    4. Verify token mint matches
-    5. Verify transaction is finalized
+    Phase C: Format validation (base58, correct length).
+    Phase D (future): Full Solana RPC verification via solders.
 
-    For now, returns a receipt with verified=True for valid-looking signatures,
-    or verified=False for obviously invalid ones.
+    Validates:
+    1. Non-empty signature
+    2. Base58 character set
+    3. Correct length for Solana tx signatures (86-88 chars)
     """
     # Basic validation
     if not tx_signature or len(tx_signature) < 10:
@@ -149,20 +219,18 @@ async def verify_payment(
             verified=False,
         )
 
-    # In production: query Solana RPC here
-    # For development: accept any well-formed signature
-    # A real Solana tx signature is 88 base58 chars
-    is_valid_format = len(tx_signature) >= 32 and tx_signature.isalnum()
+    # Validate base58 format and length
+    is_valid_format = _is_valid_solana_signature(tx_signature)
 
     logger.info(
         f"Payment verification: tx={tx_signature[:16]}... "
-        f"amount=${expected_amount_usd} token={token} "
-        f"verified={is_valid_format}"
+        f"len={len(tx_signature)} base58={is_valid_format} "
+        f"amount=${expected_amount_usd} token={token}"
     )
 
     return PaymentReceipt(
         evaluation_id="",
-        payer="unknown",  # Would extract from tx in production
+        payer="unknown",  # Phase D: extract from tx via RPC
         amount_usd=expected_amount_usd,
         token=token,
         tx_signature=tx_signature,
@@ -192,6 +260,12 @@ async def require_payment(
 
     if quote.is_free:
         return None
+
+    # Pre-fetch SOL price for accurate 402 response
+    try:
+        await _fetch_sol_price()
+    except Exception:
+        pass
 
     if not x_payment:
         raise HTTPException(

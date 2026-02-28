@@ -38,6 +38,10 @@ htmlcov/
 /data/
 *.db
 
+# JWT signing keys
+data/jwt_private_key.pem
+*.pem
+
 # Scan reports (generated)
 reports/
 

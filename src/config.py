@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     jwt_issuer: str = "did:web:quality-oracle.assisterr.ai"
     attestation_validity_days: int = 30
 
+    # Payment — Receiver Wallet
+    receiver_wallet_address: str = ""
+
+    # Solana RPC (for payment verification)
+    solana_rpc_url: str = "https://api.devnet.solana.com"
+
     # CORS
     cors_origins: List[str] = ["http://localhost:3000"]
 

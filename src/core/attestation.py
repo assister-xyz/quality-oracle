@@ -22,22 +22,48 @@ _private_key: Ed25519PrivateKey | None = None
 
 
 def _get_or_generate_key() -> Ed25519PrivateKey:
-    """Load Ed25519 private key from file or generate ephemeral one."""
+    """Load Ed25519 private key from file, or generate and persist one.
+
+    Priority:
+    1. If jwt_private_key_path is set, load from that path (or generate + save there)
+    2. Otherwise, use default path data/jwt_private_key.pem (generate + save if missing)
+    """
+    from pathlib import Path
+
     global _private_key
     if _private_key is not None:
         return _private_key
 
-    if settings.jwt_private_key_path:
+    # Determine key file path
+    key_path = settings.jwt_private_key_path or "data/jwt_private_key.pem"
+    key_file = Path(key_path)
+
+    # Try loading existing key
+    if key_file.exists():
         try:
-            with open(settings.jwt_private_key_path, "rb") as f:
-                _private_key = serialization.load_pem_private_key(f.read(), password=None)
-            logger.info("Loaded Ed25519 private key from file")
+            _private_key = serialization.load_pem_private_key(
+                key_file.read_bytes(), password=None
+            )
+            logger.info(f"Loaded Ed25519 private key from {key_file}")
             return _private_key
         except Exception as e:
-            logger.warning(f"Failed to load private key: {e}, generating ephemeral key")
+            logger.warning(f"Failed to load private key from {key_file}: {e}")
 
+    # Generate new key and persist it
     _private_key = Ed25519PrivateKey.generate()
-    logger.info("Generated ephemeral Ed25519 private key (not persisted)")
+    try:
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        pem_bytes = _private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        key_file.write_bytes(pem_bytes)
+        key_file.chmod(0o600)
+        logger.info(f"Generated and saved Ed25519 private key to {key_file}")
+    except Exception as e:
+        logger.warning(f"Generated Ed25519 key but failed to save to {key_file}: {e}")
+
     return _private_key
 
 

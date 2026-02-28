@@ -322,6 +322,72 @@ QUESTION_POOLS: Dict[str, List[ChallengeQuestion]] = {
     ],
 }
 
+def _load_seed_questions() -> Dict[str, List[ChallengeQuestion]]:
+    """Load seed questions from dev/seed-questions/*.json files.
+
+    Each JSON file has: domain, description, questions[].
+    Each question has: id, question, expected_behavior, difficulty, scoring_rubric, variants, is_canary.
+    Gracefully skips if directory is missing (e.g., Docker builds without dev/).
+    """
+    import json
+    from pathlib import Path
+
+    seed_pools: Dict[str, List[ChallengeQuestion]] = {}
+
+    # Try multiple possible paths (project root or relative)
+    candidates = [
+        Path(__file__).parent.parent.parent / "dev" / "seed-questions",
+        Path("dev/seed-questions"),
+    ]
+
+    seed_dir = None
+    for candidate in candidates:
+        if candidate.is_dir():
+            seed_dir = candidate
+            break
+
+    if not seed_dir:
+        logger.debug("Seed questions directory not found, skipping")
+        return seed_pools
+
+    for json_file in sorted(seed_dir.glob("*.json")):
+        try:
+            with open(json_file) as f:
+                data = json.load(f)
+
+            domain = data.get("domain", json_file.stem)
+            questions = data.get("questions", [])
+
+            if not questions:
+                continue
+
+            domain_questions = []
+            for q in questions:
+                domain_questions.append(ChallengeQuestion(
+                    question=q["question"],
+                    domain=domain,
+                    difficulty=q.get("difficulty", "medium"),
+                    reference_answer=q.get("expected_behavior", ""),
+                    category="seed",
+                ))
+
+            seed_pools[domain] = seed_pools.get(domain, []) + domain_questions
+            logger.info(f"Loaded {len(domain_questions)} seed questions from {json_file.name} (domain={domain})")
+
+        except Exception as e:
+            logger.warning(f"Failed to load seed questions from {json_file}: {e}")
+
+    return seed_pools
+
+
+# Merge seed questions into QUESTION_POOLS
+_seed_pools = _load_seed_questions()
+for _domain, _questions in _seed_pools.items():
+    if _domain in QUESTION_POOLS:
+        QUESTION_POOLS[_domain].extend(_questions)
+    else:
+        QUESTION_POOLS[_domain] = _questions
+
 ALL_QUESTIONS: List[ChallengeQuestion] = []
 for domain_questions in QUESTION_POOLS.values():
     ALL_QUESTIONS.extend(domain_questions)

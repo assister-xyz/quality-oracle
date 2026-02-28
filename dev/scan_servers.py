@@ -185,6 +185,7 @@ async def scan_one_server(
     semaphore: asyncio.Semaphore,
     rate_limiter: RateLimiter,
     use_streaming: bool = True,
+    runs: int = 1,
 ) -> dict:
     """Scan a single MCP server: manifest + functional eval + judging."""
     from src.core.mcp_client import evaluate_server, evaluate_server_streaming, get_server_manifest
@@ -227,12 +228,30 @@ async def scan_one_server(
                     # ── Streaming path: judge as each tool call returns ──
                     cancel = CancellationToken()
                     case_count = [0]
+                    # Accumulate tool_responses for dimension enrichment
+                    collected_responses = {}
 
                     def on_progress(tool_name, idx, score, running_avg):
                         case_count[0] = idx
                         print(f"    [{name}] {tool_name} #{idx}: score={score} (avg={running_avg})")
 
-                    stream = evaluate_server_streaming(url, cancel=cancel)
+                    # Wrap the stream to collect tool_responses
+                    async def _collecting_stream(inner_stream):
+                        async for tool_name, case, response in inner_stream:
+                            if tool_name not in collected_responses:
+                                collected_responses[tool_name] = []
+                            collected_responses[tool_name].append({
+                                "question": case.get("question", ""),
+                                "expected": case.get("expected", ""),
+                                "answer": response.get("content", ""),
+                                "latency_ms": response.get("latency_ms", 0),
+                                "is_error": response.get("is_error", False),
+                                "test_type": case.get("test_type", "unknown"),
+                            })
+                            yield tool_name, case, response
+
+                    raw_stream = evaluate_server_streaming(url, cancel=cancel)
+                    stream = _collecting_stream(raw_stream)
                     eval_result = await evaluator.evaluate_functional_streaming(
                         target_id=url,
                         response_stream=stream,
@@ -245,6 +264,16 @@ async def scan_one_server(
                         print(f"  [{name}] Early exit after {total_cases} cases: {cancel.reason}")
                     else:
                         print(f"  [{name}] Evaluated {total_cases} test cases (streaming)")
+
+                    # Enrich with all 6 dimensions (safety, process_quality, reliability, latency, schema)
+                    print(f"  [{name}] Computing dimensions...")
+                    eval_result = await evaluator.enrich_with_dimensions(
+                        result=eval_result,
+                        tool_responses=collected_responses,
+                        manifest=manifest,
+                        server_url=url,
+                        run_safety=True,
+                    )
 
                 else:
                     # ── Batch path: collect all, then judge ──
@@ -259,6 +288,68 @@ async def scan_one_server(
                         manifest=manifest,
                         run_safety=True,
                     )
+
+                # ── Multi-run aggregation ──
+                run_results = [eval_result]
+                if runs > 1:
+                    for run_idx in range(1, runs):
+                        print(f"  [{name}] Run {run_idx + 1}/{runs}...")
+                        try:
+                            run_evaluator = Evaluator(llm_judge=judge)
+                            if use_streaming:
+                                run_cancel = CancellationToken()
+                                run_collected = {}
+
+                                async def _run_collecting_stream(inner):
+                                    async for tn, c, r in inner:
+                                        if tn not in run_collected:
+                                            run_collected[tn] = []
+                                        run_collected[tn].append({
+                                            "question": c.get("question", ""),
+                                            "expected": c.get("expected", ""),
+                                            "answer": r.get("content", ""),
+                                            "latency_ms": r.get("latency_ms", 0),
+                                            "is_error": r.get("is_error", False),
+                                            "test_type": c.get("test_type", "unknown"),
+                                        })
+                                        yield tn, c, r
+
+                                run_raw = evaluate_server_streaming(url, cancel=run_cancel)
+                                run_stream = _run_collecting_stream(run_raw)
+                                run_eval = await run_evaluator.evaluate_functional_streaming(
+                                    target_id=url,
+                                    response_stream=run_stream,
+                                    manifest=manifest,
+                                    cancel=run_cancel,
+                                )
+                                run_eval = await run_evaluator.enrich_with_dimensions(
+                                    result=run_eval,
+                                    tool_responses=run_collected,
+                                    manifest=manifest,
+                                    server_url=url,
+                                    run_safety=False,  # Only run safety once
+                                )
+                            else:
+                                run_tool_resp = await evaluate_server(url)
+                                run_eval = await run_evaluator.evaluate_full(
+                                    target_id=url, server_url=url,
+                                    tool_responses=run_tool_resp,
+                                    manifest=manifest, run_safety=False,
+                                )
+                            run_results.append(run_eval)
+                            print(f"    [{name}] Run {run_idx + 1} score: {run_eval.overall_score}")
+                        except Exception as run_err:
+                            print(f"    [{name}] Run {run_idx + 1} failed: {run_err}")
+
+                # Use median scores across runs
+                if len(run_results) > 1:
+                    all_run_scores = sorted(r.overall_score for r in run_results)
+                    median_score = all_run_scores[len(all_run_scores) // 2]
+                    # Use the result closest to median for dimensions/details
+                    best_result = min(run_results, key=lambda r: abs(r.overall_score - median_score))
+                    best_result.overall_score = median_score
+                    eval_result = best_result
+                    print(f"  [{name}] Median of {len(run_results)} runs: {median_score}")
 
                 result["status"] = "success"
                 result["score"] = eval_result.overall_score
@@ -285,6 +376,11 @@ async def scan_one_server(
                     }
                     for jr in eval_result.judge_responses
                 ]
+                if len(run_results) > 1:
+                    result["runs"] = [
+                        {"score": r.overall_score, "questions": r.questions_asked}
+                        for r in run_results
+                    ]
 
                 dims = result.get("dimensions", {})
                 dims_str = " ".join(f"{k}={v}" for k, v in dims.items()) if dims else ""
@@ -394,6 +490,7 @@ async def main(
     force_provider: Optional[str] = None,
     use_streaming: bool = True,
     single_url: Optional[str] = None,
+    runs: int = 1,
 ):
     os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
@@ -407,8 +504,9 @@ async def main(
             servers = servers[:limit]
 
     mode = "streaming" if use_streaming else "batch"
+    runs_str = f", {runs} runs/server" if runs > 1 else ""
     print(f"\n{'='*70}")
-    print(f"  Quality Oracle — MCP Server Scan ({mode})")
+    print(f"  Quality Oracle — MCP Server Scan ({mode}{runs_str})")
     print(f"  Servers: {len(servers)} ({sum(1 for s in servers if s['transport'] == 'sse')} SSE, "
           f"{sum(1 for s in servers if s['transport'] == 'streamable_http')} Streamable HTTP)")
     print(f"{'='*70}\n")
@@ -424,7 +522,7 @@ async def main(
 
     # Run scans concurrently (bounded by semaphore)
     tasks = [
-        scan_one_server(server, judge, semaphore, rate_limiter, use_streaming=use_streaming)
+        scan_one_server(server, judge, semaphore, rate_limiter, use_streaming=use_streaming, runs=runs)
         for server in servers
     ]
     results = await asyncio.gather(*tasks)
@@ -487,6 +585,10 @@ if __name__ == "__main__":
         help="Disable streaming evaluation (use batch mode)",
     )
     parser.add_argument("--url", type=str, help="Scan a single server URL")
+    parser.add_argument(
+        "--runs", type=int, default=1,
+        help="Number of evaluation runs per server (median aggregation, default 1)",
+    )
     args = parser.parse_args()
 
     asyncio.run(main(
@@ -495,4 +597,5 @@ if __name__ == "__main__":
         force_provider=args.provider,
         use_streaming=not args.no_stream,
         single_url=args.url,
+        runs=args.runs,
     ))

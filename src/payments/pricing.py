@@ -51,8 +51,18 @@ ACCEPTED_TOKENS = {
     },
 }
 
-# Quality Oracle payment receiver (configurable via env)
-DEFAULT_RECEIVER = "QOracPayXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+def _get_default_receiver() -> str:
+    """Get receiver wallet from config, with placeholder fallback for dev."""
+    try:
+        from src.config import settings
+        if settings.receiver_wallet_address:
+            return settings.receiver_wallet_address
+    except Exception:
+        pass
+    return "NOT_CONFIGURED"
+
+
+DEFAULT_RECEIVER = _get_default_receiver()
 
 
 @dataclass

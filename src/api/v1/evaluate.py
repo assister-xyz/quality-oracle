@@ -32,6 +32,66 @@ from src.config import settings
 from src.payments.x402 import require_payment
 
 logger = logging.getLogger(__name__)
+
+
+def _select_best_tool(question: str, tools: list) -> dict:
+    """Select the best tool to answer a question based on keyword overlap.
+
+    Scores each tool by overlap between question words and tool name + description.
+    Returns the tool dict with highest score (falls back to first tool).
+    """
+    if not tools:
+        return {}
+    if len(tools) == 1:
+        return tools[0]
+
+    question_words = set(question.lower().split())
+    best_tool = tools[0]
+    best_score = -1
+
+    for tool in tools:
+        name_words = set(tool.get("name", "").lower().replace("_", " ").replace("-", " ").split())
+        desc_words = set(tool.get("description", "").lower().split())
+        tool_words = name_words | desc_words
+        overlap = len(question_words & tool_words)
+        if overlap > best_score:
+            best_score = overlap
+            best_tool = tool
+    return best_tool
+
+
+def _construct_arguments(question: str, tool: dict) -> dict:
+    """Construct tool arguments by mapping the question to the primary string parameter.
+
+    Reads inputSchema, finds the first required string param (or first string param),
+    and maps the question text to it.
+    """
+    schema = tool.get("inputSchema", tool.get("parameters", {}))
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+
+    if not properties:
+        return {"query": question}
+
+    # Prefer required string params, then any string param
+    primary_param = None
+    for key, prop in properties.items():
+        if prop.get("type") == "string":
+            if key in required:
+                primary_param = key
+                break
+            if primary_param is None:
+                primary_param = key
+
+    if primary_param:
+        return {primary_param: question}
+
+    # Fallback: use first parameter regardless of type
+    first_key = next(iter(properties), None)
+    if first_key:
+        return {first_key: question}
+
+    return {"query": question}
 router = APIRouter()
 
 EVALUATION_VERSION = settings.evaluation_version
@@ -253,11 +313,13 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 {"$set": {"progress_pct": 60}},
             )
 
-            # Judge the tool responses
-            eval_result = await evaluator.evaluate_functional(
+            # Judge the tool responses with full 6-axis evaluation
+            eval_result = await evaluator.evaluate_full(
                 target_id=request.target_url,
+                server_url=request.target_url,
                 tool_responses=tool_responses,
                 manifest=manifest,
+                run_safety=True,
             )
 
             await evaluations_col().update_one(
@@ -269,14 +331,15 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             domain_result = None
             if request.level == EvalLevel.DOMAIN_EXPERT and request.domains:
                 async def answer_fn(question: str) -> str:
-                    """Ask a domain question via the first available tool."""
+                    """Ask a domain question via the best-matching tool."""
                     tools = manifest.get("tools", [])
                     if not tools:
                         return ""
-                    # Use the first tool that looks like it can answer questions
-                    tool_name = tools[0]["name"]
+                    best_tool = _select_best_tool(question, tools)
+                    tool_name = best_tool.get("name", tools[0]["name"])
+                    arguments = _construct_arguments(question, best_tool)
                     resp = await mcp_client.call_tool(
-                        request.target_url, tool_name, {"query": question}
+                        request.target_url, tool_name, arguments
                     )
                     return resp.get("content", "")
 
@@ -302,6 +365,16 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             scores["manifest"] = manifest_result.to_dict()
             scores["tool_scores"] = eval_result.tool_scores
             scores["questions_asked"] = eval_result.questions_asked
+            if eval_result.dimensions:
+                scores["dimensions"] = {
+                    k: v["score"] for k, v in eval_result.dimensions.items()
+                }
+            if eval_result.safety_report:
+                scores["safety_report"] = eval_result.safety_report
+            if eval_result.process_quality_report:
+                scores["process_quality_report"] = eval_result.process_quality_report
+            if eval_result.latency_stats:
+                scores["latency_stats"] = eval_result.latency_stats
             if domain_result:
                 scores["domain_scores"] = domain_result.domain_scores
 
