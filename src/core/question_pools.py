@@ -380,9 +380,74 @@ def _load_seed_questions() -> Dict[str, List[ChallengeQuestion]]:
     return seed_pools
 
 
+def _load_generated_questions() -> Dict[str, List[ChallengeQuestion]]:
+    """Load LLM-generated questions from dev/generated-questions/*.json.
+
+    Each JSON file is a flat array of question objects with:
+    question, domain, difficulty, reference_answer, category.
+    Gracefully skips if directory is missing (e.g., Docker builds without dev/).
+    """
+    import json
+    from pathlib import Path
+
+    gen_pools: Dict[str, List[ChallengeQuestion]] = {}
+
+    candidates = [
+        Path(__file__).parent.parent.parent / "dev" / "generated-questions",
+        Path("dev/generated-questions"),
+    ]
+
+    gen_dir = None
+    for candidate in candidates:
+        if candidate.is_dir():
+            gen_dir = candidate
+            break
+
+    if not gen_dir:
+        logger.debug("Generated questions directory not found, skipping")
+        return gen_pools
+
+    for json_file in sorted(gen_dir.glob("*.json")):
+        try:
+            with open(json_file) as f:
+                questions = json.load(f)
+
+            if not isinstance(questions, list) or not questions:
+                continue
+
+            domain = json_file.stem
+            domain_questions = []
+            for q in questions:
+                if not isinstance(q, dict) or not q.get("question"):
+                    continue
+                domain_questions.append(ChallengeQuestion(
+                    question=q["question"],
+                    domain=q.get("domain", domain),
+                    difficulty=q.get("difficulty", "medium"),
+                    reference_answer=q.get("reference_answer", ""),
+                    category="generated",
+                ))
+
+            gen_pools[domain] = gen_pools.get(domain, []) + domain_questions
+            logger.info(f"Loaded {len(domain_questions)} generated questions from {json_file.name} (domain={domain})")
+
+        except Exception as e:
+            logger.warning(f"Failed to load generated questions from {json_file}: {e}")
+
+    return gen_pools
+
+
 # Merge seed questions into QUESTION_POOLS
 _seed_pools = _load_seed_questions()
 for _domain, _questions in _seed_pools.items():
+    if _domain in QUESTION_POOLS:
+        QUESTION_POOLS[_domain].extend(_questions)
+    else:
+        QUESTION_POOLS[_domain] = _questions
+
+# Merge generated questions into QUESTION_POOLS
+_gen_pools = _load_generated_questions()
+for _domain, _questions in _gen_pools.items():
     if _domain in QUESTION_POOLS:
         QUESTION_POOLS[_domain].extend(_questions)
     else:

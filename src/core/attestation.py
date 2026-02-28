@@ -6,7 +6,6 @@ Phase 2 (Week 5+): wrap in W3C Verifiable Credential envelope via src/standards/
 """
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
 from uuid import uuid4
 
 import jwt
@@ -151,12 +150,22 @@ def create_attestation(
         f"score={uaqa_payload['quality']['score']}"
     )
 
+    # Create W3C Verifiable Credential envelope
+    vc_document = None
+    try:
+        from src.standards.vc_issuer import create_vc
+        vc_document = create_vc(uaqa_payload, key, issuer_did=iss)
+        logger.info(f"Created W3C VC for attestation {attestation_id}")
+    except Exception as e:
+        logger.warning(f"Failed to create W3C VC: {e}")
+
     return {
         "_id": attestation_id,
         "evaluation_id": uaqa_payload["evaluation"]["id"],
         "target_id": target_id,
         "attestation_jwt": token,
         "uaqa_payload": uaqa_payload,
+        "vc_document": vc_document,
         "evaluation_version": evaluation_version,
         "issued_at": now,
         "expires_at": expires_at,

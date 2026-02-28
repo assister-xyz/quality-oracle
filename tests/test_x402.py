@@ -1,5 +1,7 @@
 """Tests for x402 payment layer, pricing model, and payment verification."""
 import pytest
+from unittest.mock import AsyncMock, patch, MagicMock
+
 from src.payments.pricing import (
     get_price_quote,
     get_pricing_table,
@@ -15,7 +17,23 @@ from src.payments.x402 import (
     verify_payment,
     require_payment,
     _usd_to_token_amount,
+    _check_sol_transfer,
+    _check_spl_transfer,
 )
+
+
+# Helper to mock payment_receipts_col for replay prevention
+def _mock_receipts_col(find_one_return=None):
+    mock_col = MagicMock()
+    mock_col.find_one = AsyncMock(return_value=find_one_return)
+    mock_col.insert_one = AsyncMock()
+    return mock_col
+
+
+def _patch_receipts(find_one_return=None):
+    """Patch payment_receipts_col at the import location used by x402.py."""
+    mock_col = _mock_receipts_col(find_one_return)
+    return patch("src.storage.mongodb.payment_receipts_col", return_value=mock_col)
 
 
 # ── Pricing Model ────────────────────────────────────────────────────────────
@@ -184,10 +202,11 @@ class TestPaymentVerification:
 
     @pytest.mark.asyncio
     async def test_valid_signature_verified(self):
-        receipt = await verify_payment(
-            tx_signature="a" * 88,  # Solana tx sig length
-            expected_amount_usd=0.01,
-        )
+        with _patch_receipts():
+            receipt = await verify_payment(
+                tx_signature="a" * 88,
+                expected_amount_usd=0.01,
+            )
         assert receipt.verified
 
     @pytest.mark.asyncio
@@ -208,15 +227,273 @@ class TestPaymentVerification:
 
     @pytest.mark.asyncio
     async def test_receipt_has_token_info(self):
-        receipt = await verify_payment(
-            tx_signature="a" * 88,
-            expected_amount_usd=0.05,
-            token="SOL",
-            network="solana",
-        )
+        with _patch_receipts():
+            receipt = await verify_payment(
+                tx_signature="a" * 88,
+                expected_amount_usd=0.05,
+                token="SOL",
+                network="solana",
+            )
         assert receipt.token == "SOL"
         assert receipt.network == "solana"
         assert receipt.amount_usd == 0.05
+
+
+# ── Solana RPC Verification ──────────────────────────────────────────────────
+
+class TestSolanaRPCVerification:
+
+    @pytest.mark.asyncio
+    async def test_rpc_valid_usdc_transfer(self):
+        """Valid USDC transferChecked should verify."""
+        receiver = "TestReceiverWallet123456789"
+        usdc_mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+
+        mock_rpc_response = MagicMock()
+        mock_rpc_response.status_code = 200
+        mock_rpc_response.json.return_value = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "meta": {"err": None, "innerInstructions": []},
+                "transaction": {
+                    "message": {
+                        "instructions": [{
+                            "program": "spl-token",
+                            "parsed": {
+                                "type": "transferChecked",
+                                "info": {
+                                    "mint": usdc_mint,
+                                    "destination": receiver,
+                                    "authority": "PayerWallet123",
+                                    "tokenAmount": {"amount": "10000"},
+                                },
+                            },
+                        }],
+                    },
+                },
+            },
+        }
+
+        with (
+            _patch_receipts(),
+            patch("src.payments.x402.settings") as mock_settings,
+            patch("httpx.AsyncClient") as mock_httpx,
+        ):
+            mock_settings.receiver_wallet_address = receiver
+            mock_settings.solana_rpc_url = "https://api.devnet.solana.com"
+            mock_settings.solana_cluster = "devnet"
+
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_rpc_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_httpx.return_value = mock_client
+
+            receipt = await verify_payment(
+                tx_signature="a" * 88,
+                expected_amount_usd=0.01,
+                token="USDC",
+            )
+
+        assert receipt.verified
+        assert receipt.payer == "PayerWallet123"
+
+    @pytest.mark.asyncio
+    async def test_replay_prevention(self):
+        """Same tx_signature used twice should be rejected."""
+        existing_receipt = {
+            "tx_signature": "b" * 88,
+            "payer": "PreviousPayer",
+        }
+        mock_col = _mock_receipts_col(find_one_return=existing_receipt)
+        with patch("src.storage.mongodb.payment_receipts_col", return_value=mock_col):
+            receipt = await verify_payment(
+                tx_signature="b" * 88,
+                expected_amount_usd=0.01,
+            )
+        assert not receipt.verified
+
+    @pytest.mark.asyncio
+    async def test_failed_tx_rejected(self):
+        """Transaction with error in meta should be rejected."""
+        receiver = "TestReceiver"
+
+        mock_rpc_response = MagicMock()
+        mock_rpc_response.status_code = 200
+        mock_rpc_response.json.return_value = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "meta": {"err": {"InstructionError": [0, "Custom"]}, "innerInstructions": []},
+                "transaction": {"message": {"instructions": []}},
+            },
+        }
+
+        with (
+            _patch_receipts(),
+            patch("src.payments.x402.settings") as mock_settings,
+            patch("httpx.AsyncClient") as mock_httpx,
+        ):
+            mock_settings.receiver_wallet_address = receiver
+            mock_settings.solana_rpc_url = "https://api.devnet.solana.com"
+            mock_settings.solana_cluster = "devnet"
+
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_rpc_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_httpx.return_value = mock_client
+
+            receipt = await verify_payment(
+                tx_signature="c" * 88,
+                expected_amount_usd=0.01,
+            )
+
+        assert not receipt.verified
+
+    @pytest.mark.asyncio
+    async def test_wrong_receiver_rejected(self):
+        """Transfer to wrong receiver should be rejected."""
+        usdc_mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+
+        mock_rpc_response = MagicMock()
+        mock_rpc_response.status_code = 200
+        mock_rpc_response.json.return_value = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "meta": {"err": None, "innerInstructions": []},
+                "transaction": {
+                    "message": {
+                        "instructions": [{
+                            "program": "spl-token",
+                            "parsed": {
+                                "type": "transferChecked",
+                                "info": {
+                                    "mint": usdc_mint,
+                                    "destination": "WrongReceiver",
+                                    "authority": "PayerWallet",
+                                    "tokenAmount": {"amount": "10000"},
+                                },
+                            },
+                        }],
+                    },
+                },
+            },
+        }
+
+        with (
+            _patch_receipts(),
+            patch("src.payments.x402.settings") as mock_settings,
+            patch("httpx.AsyncClient") as mock_httpx,
+        ):
+            mock_settings.receiver_wallet_address = "CorrectReceiver"
+            mock_settings.solana_rpc_url = "https://api.devnet.solana.com"
+            mock_settings.solana_cluster = "devnet"
+
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_rpc_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_httpx.return_value = mock_client
+
+            receipt = await verify_payment(
+                tx_signature="d" * 88,
+                expected_amount_usd=0.01,
+            )
+
+        assert not receipt.verified
+
+    @pytest.mark.asyncio
+    async def test_insufficient_amount_rejected(self):
+        """Transfer with less than expected amount should be rejected."""
+        receiver = "TestReceiver"
+        usdc_mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+
+        mock_rpc_response = MagicMock()
+        mock_rpc_response.status_code = 200
+        mock_rpc_response.json.return_value = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "meta": {"err": None, "innerInstructions": []},
+                "transaction": {
+                    "message": {
+                        "instructions": [{
+                            "program": "spl-token",
+                            "parsed": {
+                                "type": "transferChecked",
+                                "info": {
+                                    "mint": usdc_mint,
+                                    "destination": receiver,
+                                    "authority": "PayerWallet",
+                                    "tokenAmount": {"amount": "100"},  # Way too low
+                                },
+                            },
+                        }],
+                    },
+                },
+            },
+        }
+
+        with (
+            _patch_receipts(),
+            patch("src.payments.x402.settings") as mock_settings,
+            patch("httpx.AsyncClient") as mock_httpx,
+        ):
+            mock_settings.receiver_wallet_address = receiver
+            mock_settings.solana_rpc_url = "https://api.devnet.solana.com"
+            mock_settings.solana_cluster = "devnet"
+
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_rpc_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_httpx.return_value = mock_client
+
+            receipt = await verify_payment(
+                tx_signature="e" * 88,
+                expected_amount_usd=0.01,  # Expects 10000 base units
+            )
+
+        assert not receipt.verified
+
+
+# ── SOL Transfer Parsing ─────────────────────────────────────────────────────
+
+class TestSOLTransferParsing:
+
+    def test_valid_sol_transfer(self):
+        instructions = [{
+            "program": "system",
+            "parsed": {
+                "type": "transfer",
+                "info": {
+                    "source": "PayerWallet",
+                    "destination": "Receiver",
+                    "lamports": 10_000_000,  # 0.01 SOL — plenty at any price
+                },
+            },
+        }]
+        verified, err, payer = _check_sol_transfer(instructions, "Receiver", 0.01)
+        assert verified
+        assert payer == "PayerWallet"
+
+    def test_wrong_receiver_sol(self):
+        instructions = [{
+            "program": "system",
+            "parsed": {
+                "type": "transfer",
+                "info": {
+                    "source": "PayerWallet",
+                    "destination": "WrongReceiver",
+                    "lamports": 100000,
+                },
+            },
+        }]
+        verified, err, payer = _check_sol_transfer(instructions, "CorrectReceiver", 0.01)
+        assert not verified
 
 
 # ── require_payment Dependency ───────────────────────────────────────────────
@@ -240,11 +517,12 @@ class TestRequirePayment:
 
     @pytest.mark.asyncio
     async def test_paid_level_with_valid_payment(self):
-        receipt = await require_payment(
-            level=2,
-            tier="free",
-            x_payment="a" * 88 + ":USDC:solana",
-        )
+        with _patch_receipts():
+            receipt = await require_payment(
+                level=2,
+                tier="free",
+                x_payment="a" * 88 + ":USDC:solana",
+            )
         assert receipt is not None
         assert receipt.verified
 

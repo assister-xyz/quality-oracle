@@ -72,6 +72,7 @@ class Settings(BaseSettings):
 
     # Solana RPC (for payment verification)
     solana_rpc_url: str = "https://api.devnet.solana.com"
+    solana_cluster: str = "devnet"
 
     # CORS
     cors_origins: List[str] = ["http://localhost:3000"]

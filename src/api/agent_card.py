@@ -1,5 +1,6 @@
 """A2A Agent Card — Quality Oracle as a discoverable A2A agent (v0.3 spec)."""
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from src.standards.a2a_extension import build_provider_extension_declaration
 
@@ -21,6 +22,7 @@ async def agent_card():
                        "a verifiable quality score with W3C VC attestation.",
         "url": "https://quality-oracle.assisterr.ai",
         "version": "0.1.0",
+        "protocolVersion": "0.3.0",
         "provider": {
             "organization": "Assisterr",
             "url": "https://assisterr.ai",
@@ -68,6 +70,45 @@ async def agent_card():
             },
         ],
     }
+
+
+@router.get("/.well-known/did.json")
+async def did_document():
+    """DID Document endpoint for W3C VC verification.
+
+    Returns the DID Document with Multikey verification method,
+    allowing anyone to verify Quality Oracle's VCs offline.
+    """
+    from src.core.attestation import _get_or_generate_key
+    from src.standards.vc_issuer import build_did_document
+    from src.config import settings
+
+    key = _get_or_generate_key()
+    return build_did_document(key.public_key(), issuer_did=settings.jwt_issuer)
+
+
+@router.get("/contexts/quality/v1")
+async def quality_context():
+    """Custom JSON-LD context defining QualityAttestation vocabulary.
+
+    Provides term definitions for the Quality Oracle VC credentialSubject fields.
+    """
+    return JSONResponse(content={
+        "@context": {
+            "@version": 1.1,
+            "qo": "https://quality-oracle.assisterr.ai/vocab#",
+            "QualityAttestation": "qo:QualityAttestation",
+            "QualityEvaluation": "qo:QualityEvaluation",
+            "qualityScore": {"@id": "qo:qualityScore", "@type": "https://www.w3.org/2001/XMLSchema#integer"},
+            "qualityTier": {"@id": "qo:qualityTier", "@type": "https://www.w3.org/2001/XMLSchema#string"},
+            "confidence": {"@id": "qo:confidence", "@type": "https://www.w3.org/2001/XMLSchema#float"},
+            "evaluationLevel": {"@id": "qo:evaluationLevel", "@type": "https://www.w3.org/2001/XMLSchema#integer"},
+            "domains": {"@id": "qo:domains", "@container": "@set"},
+            "questionsAsked": {"@id": "qo:questionsAsked", "@type": "https://www.w3.org/2001/XMLSchema#integer"},
+            "evaluationId": {"@id": "qo:evaluationId", "@type": "https://www.w3.org/2001/XMLSchema#string"},
+            "evaluatedAt": {"@id": "qo:evaluatedAt", "@type": "https://www.w3.org/2001/XMLSchema#dateTime"},
+        },
+    }, media_type="application/ld+json")
 
 
 @router.get("/ext/evaluation/v1")

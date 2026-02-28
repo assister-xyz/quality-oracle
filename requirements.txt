@@ -16,9 +16,10 @@ redis[hiredis]==5.2.1
 # MCP Client
 mcp>=1.8.0
 
-# Attestation Signing (JWT Phase 1, Ed25519)
+# Attestation Signing (JWT Phase 1, Ed25519 + W3C VC Phase 2)
 PyJWT==2.10.1
 cryptography==44.0.0
+rfc8785>=0.1.2
 
 # Async Job Queue (eval jobs, migrate from BackgroundTasks at ~100 evals/day)
 arq==0.26.1

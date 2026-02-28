@@ -12,8 +12,8 @@ Flow:
 This module provides:
 - x402 response builder (402 Payment Required with payment instructions)
 - Payment header parser (X-Payment)
-- Payment verification dependency for FastAPI
-- Payment receipt storage
+- Payment verification (format + optional Solana RPC)
+- Replay prevention via MongoDB receipt storage
 - Pricing endpoint
 
 x402 spec reference: https://x402.org
@@ -21,10 +21,13 @@ Solana has 77% of x402 payment volume.
 """
 import logging
 import time as _time
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Optional, Tuple
 
+import httpx
 from fastapi import HTTPException
 
+from src.config import settings
 from src.payments.pricing import (
     PriceQuote,
     PaymentReceipt,
@@ -86,8 +89,6 @@ async def _fetch_sol_price() -> float:
     now = _time.time()
     if _sol_price_cache["price"] and (now - _sol_price_cache["fetched_at"]) < _SOL_PRICE_CACHE_TTL:
         return _sol_price_cache["price"]
-
-    import httpx
 
     # Try Jupiter Price API v2 (free, no auth)
     try:
@@ -191,6 +192,161 @@ def _is_valid_solana_signature(tx_signature: str) -> bool:
     return _is_valid_base58(tx_signature)
 
 
+# ── USDC Mint Addresses ─────────────────────────────────────────────────────
+
+_USDC_MINTS = {
+    "mainnet-beta": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "devnet": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+}
+
+
+# ── Solana RPC Transaction Verification ──────────────────────────────────────
+
+def _check_sol_transfer(
+    instructions: list,
+    receiver: str,
+    expected_usd: float,
+) -> Tuple[bool, str, str]:
+    """Parse system program SOL transfer instructions.
+
+    Returns (verified, error, payer_address).
+    """
+    sol_price = _sol_price_cache.get("price") or 150.0
+    expected_lamports = int((expected_usd / sol_price) * 1_000_000_000)
+    # Allow 5% slippage for SOL price fluctuation
+    min_lamports = int(expected_lamports * 0.95)
+
+    for ix in instructions:
+        program = ix.get("program", "")
+        if program != "system":
+            continue
+        parsed = ix.get("parsed", {})
+        if parsed.get("type") != "transfer":
+            continue
+        info = parsed.get("info", {})
+        dest = info.get("destination", "")
+        lamports = info.get("lamports", 0)
+        source = info.get("source", "")
+
+        if dest == receiver and lamports >= min_lamports:
+            return True, "", source
+
+    return False, "No matching SOL transfer found", ""
+
+
+def _check_spl_transfer(
+    instructions: list,
+    receiver: str,
+    expected_usd: float,
+    mint: str,
+    token: str,
+) -> Tuple[bool, str, str]:
+    """Parse SPL token transferChecked instructions.
+
+    Returns (verified, error, payer_address).
+    """
+    token_info = ACCEPTED_TOKENS.get(token, {})
+    decimals = token_info.get("decimals", 6)
+    expected_amount = int(expected_usd * (10 ** decimals))
+    # Allow 1% slippage for USDC (price stable)
+    min_amount = int(expected_amount * 0.99)
+
+    for ix in instructions:
+        program = ix.get("program", "")
+        if program != "spl-token":
+            continue
+        parsed = ix.get("parsed", {})
+        ix_type = parsed.get("type", "")
+        if ix_type not in ("transferChecked", "transfer"):
+            continue
+        info = parsed.get("info", {})
+
+        # Check mint matches
+        ix_mint = info.get("mint", "")
+        if ix_type == "transferChecked" and ix_mint != mint:
+            continue
+
+        dest = info.get("destination", "")
+        authority = info.get("authority", "")
+        amount_str = info.get("tokenAmount", {}).get("amount", "0") if ix_type == "transferChecked" else info.get("amount", "0")
+        amount = int(amount_str)
+
+        if dest == receiver and amount >= min_amount:
+            return True, "", authority
+
+    return False, "No matching SPL token transfer found", ""
+
+
+async def _verify_solana_transaction(
+    tx_signature: str,
+    expected_amount_usd: float,
+    token: str = "USDC",
+) -> Tuple[bool, str, str]:
+    """Verify a Solana transaction via JSON-RPC getTransaction.
+
+    Uses httpx POST to Solana RPC — zero new deps.
+
+    Returns (verified, error_message, payer_address).
+    """
+    receiver = settings.receiver_wallet_address
+    cluster = settings.solana_cluster
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+            tx_signature,
+            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
+        ],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(settings.solana_rpc_url, json=body)
+
+        if resp.status_code != 200:
+            return False, f"RPC returned HTTP {resp.status_code}", ""
+
+        data = resp.json()
+        error = data.get("error")
+        if error:
+            return False, f"RPC error: {error.get('message', str(error))}", ""
+
+        result = data.get("result")
+        if not result:
+            return False, "Transaction not found (not finalized yet?)", ""
+
+        # Check transaction succeeded (no error)
+        meta = result.get("meta", {})
+        if meta.get("err") is not None:
+            return False, f"Transaction failed: {meta['err']}", ""
+
+        # Extract all instructions (including inner instructions)
+        tx = result.get("transaction", {})
+        message = tx.get("message", {})
+        instructions = message.get("instructions", [])
+
+        # Also check inner instructions
+        inner_instructions = meta.get("innerInstructions", [])
+        for inner in inner_instructions:
+            instructions.extend(inner.get("instructions", []))
+
+        # Determine verification based on token type
+        if token == "SOL":
+            return _check_sol_transfer(instructions, receiver, expected_amount_usd)
+        else:
+            mint = _USDC_MINTS.get(cluster, _USDC_MINTS["devnet"])
+            return _check_spl_transfer(instructions, receiver, expected_amount_usd, mint, token)
+
+    except httpx.TimeoutException:
+        return False, "Solana RPC request timed out", ""
+    except Exception as e:
+        return False, f"RPC verification error: {e}", ""
+
+
+# ── Main Verification Flow ───────────────────────────────────────────────────
+
 async def verify_payment(
     tx_signature: str,
     expected_amount_usd: float,
@@ -199,15 +355,17 @@ async def verify_payment(
 ) -> PaymentReceipt:
     """Verify a payment transaction.
 
-    Phase C: Format validation (base58, correct length).
-    Phase D (future): Full Solana RPC verification via solders.
+    Flow:
+    1. Format validation (base58, correct length)
+    2. Replay prevention (check payment_receipts collection)
+    3. RPC verification (only if receiver_wallet_address is configured)
+    4. Store receipt for replay prevention
+    5. Return PaymentReceipt
 
-    Validates:
-    1. Non-empty signature
-    2. Base58 character set
-    3. Correct length for Solana tx signatures (86-88 chars)
+    When receiver_wallet_address is empty (default), falls back to
+    format-only validation — same as Phase C behavior.
     """
-    # Basic validation
+    # Step 1: Basic format validation
     if not tx_signature or len(tx_signature) < 10:
         return PaymentReceipt(
             evaluation_id="",
@@ -219,23 +377,88 @@ async def verify_payment(
             verified=False,
         )
 
-    # Validate base58 format and length
     is_valid_format = _is_valid_solana_signature(tx_signature)
+    if not is_valid_format:
+        logger.info(f"Payment format invalid: tx={tx_signature[:16]}... len={len(tx_signature)}")
+        return PaymentReceipt(
+            evaluation_id="",
+            payer="unknown",
+            amount_usd=expected_amount_usd,
+            token=token,
+            tx_signature=tx_signature,
+            network=network,
+            verified=False,
+        )
+
+    # Step 2: Replay prevention
+    payer = "unknown"
+    try:
+        from src.storage.mongodb import payment_receipts_col
+        existing = await payment_receipts_col().find_one({"tx_signature": tx_signature})
+        if existing:
+            logger.warning(f"Replay attempt: tx={tx_signature[:16]}... already used")
+            return PaymentReceipt(
+                evaluation_id="",
+                payer=existing.get("payer", "unknown"),
+                amount_usd=expected_amount_usd,
+                token=token,
+                tx_signature=tx_signature,
+                network=network,
+                verified=False,
+            )
+    except Exception as e:
+        logger.warning(f"Replay check failed (proceeding): {e}")
+
+    # Step 3: RPC verification (opt-in via receiver_wallet_address)
+    rpc_verified = True  # Default: pass if no RPC configured
+    if settings.receiver_wallet_address:
+        rpc_verified, error, rpc_payer = await _verify_solana_transaction(
+            tx_signature, expected_amount_usd, token,
+        )
+        if rpc_payer:
+            payer = rpc_payer
+        if not rpc_verified:
+            logger.warning(f"RPC verification failed: {error}")
+            return PaymentReceipt(
+                evaluation_id="",
+                payer=payer,
+                amount_usd=expected_amount_usd,
+                token=token,
+                tx_signature=tx_signature,
+                network=network,
+                verified=False,
+            )
 
     logger.info(
-        f"Payment verification: tx={tx_signature[:16]}... "
-        f"len={len(tx_signature)} base58={is_valid_format} "
-        f"amount=${expected_amount_usd} token={token}"
+        f"Payment verified: tx={tx_signature[:16]}... "
+        f"payer={payer} amount=${expected_amount_usd} token={token} "
+        f"rpc={'on' if settings.receiver_wallet_address else 'off'}"
     )
+
+    # Step 4: Store receipt for replay prevention
+    try:
+        from src.storage.mongodb import payment_receipts_col
+        await payment_receipts_col().insert_one({
+            "tx_signature": tx_signature,
+            "payer": payer,
+            "amount_usd": expected_amount_usd,
+            "token": token,
+            "network": network,
+            "verified": True,
+            "created_at": datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        # Don't fail payment verification if receipt storage fails
+        logger.warning(f"Failed to store payment receipt: {e}")
 
     return PaymentReceipt(
         evaluation_id="",
-        payer="unknown",  # Phase D: extract from tx via RPC
+        payer=payer,
         amount_usd=expected_amount_usd,
         token=token,
         tx_signature=tx_signature,
         network=network,
-        verified=is_valid_format,
+        verified=True,
     )
 
 

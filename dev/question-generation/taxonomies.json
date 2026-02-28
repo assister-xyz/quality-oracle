@@ -1,0 +1,141 @@
+{
+  "domains": {
+    "defi": {
+      "description": "DeFi protocols, liquidity, yield, and blockchain finance",
+      "subtopics": [
+        "AMM mechanics and pricing curves",
+        "Yield farming strategies and risks",
+        "Lending/borrowing protocols",
+        "Stablecoin mechanisms and depegging",
+        "Cross-chain bridges and risks",
+        "MEV extraction and mitigation",
+        "Governance token economics",
+        "Liquidity bootstrapping and bonding curves"
+      ],
+      "target_count": 20
+    },
+    "solana": {
+      "description": "Solana blockchain architecture, programming, and ecosystem",
+      "subtopics": [
+        "Account model and rent",
+        "Program Derived Addresses (PDAs)",
+        "Cross-Program Invocation (CPI)",
+        "Transaction structure and versioned transactions",
+        "Compute budget and optimization",
+        "Token extensions (Token-2022)",
+        "Validator economics and staking",
+        "Solana runtime and Sealevel"
+      ],
+      "target_count": 20
+    },
+    "security": {
+      "description": "Smart contract and web3 security vulnerabilities and defenses",
+      "subtopics": [
+        "Reentrancy and state manipulation",
+        "Oracle manipulation attacks",
+        "Access control vulnerabilities",
+        "Front-running and sandwich attacks",
+        "Integer overflow and precision loss",
+        "Signature replay and malleability"
+      ],
+      "target_count": 15
+    },
+    "code-generation": {
+      "description": "Code generation quality, correctness, and best practices",
+      "subtopics": [
+        "Algorithm implementation correctness",
+        "Error handling patterns",
+        "Data structure selection",
+        "API design and contracts",
+        "Testing and edge cases",
+        "Performance optimization"
+      ],
+      "target_count": 15
+    },
+    "general": {
+      "description": "General AI agent concepts, protocols, and architecture",
+      "subtopics": [
+        "Agent architectures and patterns",
+        "Quality verification approaches",
+        "Trust and reputation systems",
+        "Agent-to-agent communication",
+        "Evaluation methodology"
+      ],
+      "target_count": 10
+    },
+    "mcp_protocol": {
+      "description": "Model Context Protocol specification and implementation",
+      "subtopics": [
+        "Transport mechanisms (stdio, SSE, Streamable HTTP)",
+        "Tool discovery and schema validation",
+        "Session management and lifecycle",
+        "Error handling and JSON-RPC codes",
+        "Resources and prompts",
+        "Capability negotiation",
+        "Sampling and completion",
+        "Security considerations"
+      ],
+      "target_count": 20
+    },
+    "tool_quality": {
+      "description": "MCP tool design quality, documentation, and reliability",
+      "subtopics": [
+        "Tool description and documentation",
+        "Input validation and schema design",
+        "Output format and consistency",
+        "Error reporting and recovery",
+        "Idempotency and side effects",
+        "Performance and timeout handling"
+      ],
+      "target_count": 15
+    },
+    "error_handling": {
+      "description": "Error handling patterns for AI tools and services",
+      "subtopics": [
+        "Graceful degradation strategies",
+        "Circuit breaker patterns",
+        "Retry and backoff strategies",
+        "Validation and boundary checking",
+        "Concurrent request handling",
+        "Dependency failure isolation"
+      ],
+      "target_count": 15
+    },
+    "agent_communication": {
+      "description": "Agent-to-agent protocols, discovery, and coordination",
+      "subtopics": [
+        "A2A protocol and Agent Cards",
+        "Task delegation and verification",
+        "Trust hierarchies and attestations",
+        "Quality-gated interactions",
+        "Payment protocols (x402)",
+        "Multi-agent orchestration",
+        "Discovery and registry patterns"
+      ],
+      "target_count": 15
+    },
+    "ai_safety": {
+      "description": "AI safety, alignment, and security for agent systems",
+      "subtopics": [
+        "Prompt injection defenses",
+        "Data exfiltration prevention",
+        "Privilege escalation and confused deputy",
+        "Hallucination detection and grounding",
+        "Output filtering and content safety",
+        "Least privilege and sandboxing",
+        "Adversarial robustness",
+        "Regulatory compliance (EU AI Act)"
+      ],
+      "target_count": 20
+    }
+  },
+  "generation_config": {
+    "difficulties": {
+      "easy": 0.3,
+      "medium": 0.45,
+      "hard": 0.25
+    },
+    "categories": ["functional", "correctness", "edge_case"],
+    "dedup_method": "sha256_question_text"
+  }
+}

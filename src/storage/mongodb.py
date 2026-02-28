@@ -24,6 +24,8 @@ async def connect_db():
     await _db.quality__question_banks.create_index("domain")
     await _db.quality__production_feedback.create_index("target_id")
     await _db.quality__production_feedback.create_index("created_at")
+    await _db.quality__payment_receipts.create_index("tx_signature", unique=True)
+    await _db.quality__payment_receipts.create_index("created_at")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -67,3 +69,7 @@ def api_keys_col():
 
 def feedback_col():
     return get_db().quality__production_feedback
+
+
+def payment_receipts_col():
+    return get_db().quality__payment_receipts

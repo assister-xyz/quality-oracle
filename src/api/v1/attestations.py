@@ -1,5 +1,6 @@
-"""Attestation endpoints — JWT (Phase 1), W3C VC (Phase 2, Week 5+)."""
+"""Attestation endpoints — JWT (Phase 1), W3C VC (Phase 2)."""
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from src.storage.mongodb import attestations_col
 from src.core.attestation import verify_attestation as verify_jwt
 from src.storage.cache import (
@@ -69,3 +70,21 @@ async def verify_attestation_endpoint(
 
     await cache_attestation_verify(attestation_id, result)
     return result
+
+
+@router.get("/attestation/{attestation_id}/vc")
+async def get_attestation_vc(attestation_id: str):
+    """Get the W3C Verifiable Credential for an attestation.
+
+    Public endpoint — VCs are designed to be shared and verified by anyone.
+    Returns 404 if attestation not found or has no VC (pre-VC attestation).
+    """
+    doc = await attestations_col().find_one({"_id": attestation_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Attestation not found")
+
+    vc = doc.get("vc_document")
+    if not vc:
+        raise HTTPException(status_code=404, detail="No W3C VC available for this attestation")
+
+    return JSONResponse(content=vc, media_type="application/vc+json")

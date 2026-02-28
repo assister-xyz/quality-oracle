@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 
 @pytest.fixture()
 def mock_api_key_doc():
@@ -18,6 +20,57 @@ def mock_api_key_doc():
         "last_used_at": None,
         "active": True,
         "used_this_month": 0,
+    }
+
+
+@pytest.fixture()
+def mock_attestation_with_vc():
+    """Full attestation doc including vc_document with valid VC structure."""
+    from src.standards.vc_issuer import create_vc
+
+    key = Ed25519PrivateKey.generate()
+    uaqa_payload = {
+        "uaqa_version": "1.0",
+        "issuer": "did:web:quality-oracle.assisterr.ai",
+        "issued_at": "2026-02-28T12:00:00Z",
+        "expires_at": "2026-03-30T12:00:00Z",
+        "evaluation_version": "v1.0",
+        "subject": {
+            "id": "test-mcp-server",
+            "type": "mcp_server",
+            "name": "Test Server",
+        },
+        "quality": {
+            "score": 82,
+            "tier": "proficient",
+            "confidence": 0.85,
+            "evaluation_level": 2,
+            "domains": ["mcp_protocol", "tool_quality"],
+            "tool_scores": {},
+            "questions_asked": 10,
+        },
+        "evaluation": {
+            "id": "eval-vc-test-001",
+            "method": "challenge-response-v1",
+            "evaluated_at": "2026-02-28T12:00:00Z",
+            "verification_mode": "oracle_verified",
+        },
+    }
+
+    vc_document = create_vc(uaqa_payload, key)
+
+    return {
+        "_id": "attest-vc-test-001",
+        "evaluation_id": "eval-vc-test-001",
+        "target_id": "test-mcp-server",
+        "attestation_jwt": "eyJ-mock-jwt-token",
+        "uaqa_payload": uaqa_payload,
+        "vc_document": vc_document,
+        "evaluation_version": "v1.0",
+        "issued_at": datetime(2026, 2, 28, 12, 0),
+        "expires_at": datetime(2026, 3, 30, 12, 0),
+        "revoked": False,
+        "revoked_reason": None,
     }
 
 
