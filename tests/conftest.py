@@ -95,6 +95,7 @@ def _make_mock_col():
     mock_col.find_one = AsyncMock(return_value=None)
     mock_col.insert_one = AsyncMock()
     mock_col.update_one = AsyncMock()
+    mock_col.update_many = AsyncMock()
     mock_col.count_documents = AsyncMock(return_value=0)
     mock_col.create_index = AsyncMock()
 
