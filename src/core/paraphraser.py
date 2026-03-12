@@ -13,8 +13,7 @@ Template-based is default; LLM-based activates when judge LLM is available.
 import hashlib
 import logging
 import random
-import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -140,19 +139,29 @@ class QuestionParaphraser:
     Each evaluation gets a unique seed derived from target_id + timestamp,
     ensuring different question phrasings across evaluations while
     maintaining deterministic behavior within a single run.
+
+    LLM paraphrasing auto-activates for certified/audited eval modes
+    when an LLM judge is available.
     """
 
-    def __init__(self, llm_judge=None):
+    def __init__(self, llm_judge=None, eval_mode: str = "verified"):
         """
         Args:
             llm_judge: Optional LLMJudge for richer LLM-based paraphrasing.
                        Falls back to template-based if None or LLM unavailable.
+            eval_mode: Evaluation mode — LLM paraphrase enabled for certified/audited.
         """
         self._llm_judge = llm_judge
-        self._use_llm = (
+        self._eval_mode = eval_mode
+        self._llm_available = (
             llm_judge is not None
             and hasattr(llm_judge, 'is_llm_available')
             and llm_judge.is_llm_available
+        )
+        # Auto-enable LLM paraphrasing for certified/audited modes
+        self._use_llm = (
+            self._llm_available
+            and eval_mode in ("certified", "audited")
         )
 
     def generate_seed(self, target_id: str, run_id: str = "") -> int:

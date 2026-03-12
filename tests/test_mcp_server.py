@@ -11,7 +11,7 @@ class TestMCPServerSetup:
         assert isinstance(mcp, FastMCP)
 
     def test_mcp_server_name(self):
-        assert mcp.name == "quality-oracle"
+        assert mcp.name == "agenttrust"
 
     @pytest.mark.asyncio
     async def test_check_quality_tool_registered(self):

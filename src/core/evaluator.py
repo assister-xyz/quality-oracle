@@ -68,6 +68,9 @@ class EvaluationResult:
         self.process_quality_report: Optional[dict] = None
         self.latency_stats: Optional[Dict[str, int]] = None
 
+        # Anti-gaming signals
+        self.gaming_risk: Optional[dict] = None
+
     def to_dict(self) -> dict:
         d = {
             "overall_score": self.overall_score,
@@ -89,6 +92,8 @@ class EvaluationResult:
             d["process_quality"] = self.process_quality_report
         if self.latency_stats:
             d["latency"] = self.latency_stats
+        if self.gaming_risk:
+            d["gaming_risk"] = self.gaming_risk
         return d
 
 
@@ -100,11 +105,12 @@ class Evaluator:
     Accepts LLMJudge or ConsensusJudge (both implement ajudge()).
     """
 
-    def __init__(self, llm_judge, paraphrase: bool = True):
+    def __init__(self, llm_judge, paraphrase: bool = True, eval_mode: str = "verified"):
         """Init with any judge that has an ajudge(question, expected, answer) method."""
         self.llm_judge = llm_judge
         self.question_selector = QuestionSelector()
-        self.paraphraser = QuestionParaphraser(llm_judge) if paraphrase else None
+        self.eval_mode = eval_mode
+        self.paraphraser = QuestionParaphraser(llm_judge, eval_mode=eval_mode) if paraphrase else None
 
     def validate_manifest(self, manifest: dict) -> ManifestValidationResult:
         """Level 1: Validate MCP server manifest for completeness and quality."""
@@ -196,6 +202,7 @@ class Evaluator:
 
                 judge_result = await self.llm_judge.ajudge(
                     q, exp, resp["answer"],
+                    test_type=resp.get("test_type", ""),
                 )
                 judged_count += 1
                 tool_scores.append(judge_result.score)
@@ -321,7 +328,10 @@ class Evaluator:
             case_idx += 1
 
             # Judge immediately
-            judge_result = await self.llm_judge.ajudge(q, exp, response["content"])
+            judge_result = await self.llm_judge.ajudge(
+                q, exp, response["content"],
+                test_type=case.get("test_type", ""),
+            )
             score = judge_result.score
             all_scores.append(score)
 

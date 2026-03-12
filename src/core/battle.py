@@ -1,7 +1,10 @@
 """Head-to-head battle engine for AgentTrust Arena.
 
 Orchestrates parallel evaluation of two agents with identical challenges,
-determines winner, and updates ratings.
+determines winner, and updates ratings. Includes arena integrity features:
+- Blind battles (agent identity anonymization)
+- Position swap consistency checking
+- Style control regression
 """
 import hashlib
 import logging
@@ -9,11 +12,12 @@ import random
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from src.core.question_pools import QuestionSelector, ChallengeQuestion, ALL_QUESTIONS
 from src.core.rating import RatingEngine
+from src.core.scoring import extract_style_features, compute_style_penalty
 from src.storage.mongodb import battles_col, scores_col
 from src.storage.models import BattleRequest, BattleStatus
 
@@ -92,6 +96,107 @@ class BattleEngine:
         if not pool:
             return []
         return rng.sample(pool, min(count, len(pool)))
+
+    # ── Arena Integrity (QO-009) ──────────────────────────────────────────
+
+    @staticmethod
+    def anonymize_response(response: Dict[str, Any], label: str) -> Dict[str, Any]:
+        """Strip identifying information from agent response before judging.
+
+        Replaces agent name, URL, and metadata with a neutral label
+        (e.g. "Agent A" / "Agent B") so the LLM judge cannot be biased
+        by reputation or name recognition.
+        """
+        return {
+            "label": label,
+            "response": response.get("content", response.get("response", "")),
+            "latency_ms": response.get("latency_ms", 0),
+            # Intentionally excluded: name, url, server_info, manifest
+        }
+
+    @staticmethod
+    def check_position_consistency(
+        score_forward: Dict[str, Any],
+        score_reversed: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Check if battle result is consistent across A/B position swap.
+
+        In forward ordering, Agent A is presented first.
+        In reversed ordering, Agent B is presented first.
+        If the winner changes, the battle is declared a tie (position bias detected).
+
+        Returns:
+            dict with winner, consistency status, and averaged scores.
+        """
+        fwd_a = score_forward.get("overall_score", 0)
+        fwd_b = score_forward.get("overall_score_b", 0)
+        rev_a = score_reversed.get("overall_score", 0)
+        rev_b = score_reversed.get("overall_score_b", 0)
+
+        # Determine winner in each ordering
+        if fwd_a > fwd_b:
+            winner_forward = "a"
+        elif fwd_b > fwd_a:
+            winner_forward = "b"
+        else:
+            winner_forward = None
+
+        # In reversed ordering, A and B are swapped in presentation
+        # but we map back: reversed "first" = B, reversed "second" = A
+        if rev_b > rev_a:
+            winner_reversed = "b"
+        elif rev_a > rev_b:
+            winner_reversed = "a"
+        else:
+            winner_reversed = None
+
+        consistent = winner_forward == winner_reversed
+
+        # Average scores across orderings for fairness
+        avg_score_a = int(round((fwd_a + rev_a) / 2))
+        avg_score_b = int(round((fwd_b + rev_b) / 2))
+
+        if consistent:
+            return {
+                "winner": winner_forward,
+                "consistency": "consistent",
+                "score_a": avg_score_a,
+                "score_b": avg_score_b,
+                "forward_scores": {"a": fwd_a, "b": fwd_b},
+                "reversed_scores": {"a": rev_a, "b": rev_b},
+            }
+        else:
+            # Position bias detected — force tie
+            return {
+                "winner": None,
+                "consistency": "tie_forced",
+                "score_a": avg_score_a,
+                "score_b": avg_score_b,
+                "forward_scores": {"a": fwd_a, "b": fwd_b},
+                "reversed_scores": {"a": rev_a, "b": rev_b},
+            }
+
+    @staticmethod
+    def build_integrity_metadata(
+        blind_enforced: bool = True,
+        position_swapped: bool = False,
+        style_controlled: bool = False,
+        consistency: str = "not_checked",
+        style_penalty_a: float = 0.0,
+        style_penalty_b: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Build arena integrity metadata for battle document."""
+        return {
+            "blind_enforced": blind_enforced,
+            "position_swapped": position_swapped,
+            "style_controlled": style_controlled,
+            "consistency": consistency,
+            "style_penalties": {
+                "agent_a": style_penalty_a,
+                "agent_b": style_penalty_b,
+            },
+            "integrity_version": "1.0",
+        }
 
     # ── Winner Determination ─────────────────────────────────────────────
 
@@ -258,6 +363,9 @@ class BattleEngine:
             "question_responses": [],
             "rating_deltas": None,
             "error": None,
+            "integrity": self.build_integrity_metadata(
+                blind_enforced=request.blind,
+            ),
         }
 
         await battles_col().insert_one(battle_doc)
@@ -309,10 +417,69 @@ class BattleEngine:
                 eval_a = {"overall_score": 0, "scores": {}, "name": "Agent A"}
                 eval_b = {"overall_score": 0, "scores": {}, "name": "Agent B"}
 
-            # Determine winner
-            winner, margin, photo_finish = self.determine_winner(
-                eval_a["overall_score"], eval_b["overall_score"],
-            )
+            # Apply style penalties to scores before determining winner
+            style_penalty_a = eval_a.get("style_penalty", 0.0)
+            style_penalty_b = eval_b.get("style_penalty", 0.0)
+            if style_penalty_a > 0:
+                eval_a["overall_score"] = max(0, eval_a["overall_score"] - int(style_penalty_a))
+            if style_penalty_b > 0:
+                eval_b["overall_score"] = max(0, eval_b["overall_score"] - int(style_penalty_b))
+
+            # Position swap: run second eval with agents reversed for certified/audited
+            eval_mode = battle.get("eval_mode", "verified")
+            position_swapped = False
+            consistency = "not_checked"
+
+            if eval_mode in ("certified", "audited") and evaluator_factory:
+                # Build reversed battle doc (swap agent_a and agent_b)
+                reversed_battle = dict(battle)
+                reversed_battle["agent_a"], reversed_battle["agent_b"] = (
+                    battle["agent_b"], battle["agent_a"],
+                )
+
+                rev_eval_a, rev_eval_b = await self._run_parallel_evals(
+                    reversed_battle, questions, evaluator_factory,
+                )
+
+                # Apply style penalties to reversed scores too
+                rev_penalty_a = rev_eval_a.get("style_penalty", 0.0)
+                rev_penalty_b = rev_eval_b.get("style_penalty", 0.0)
+                if rev_penalty_a > 0:
+                    rev_eval_a["overall_score"] = max(0, rev_eval_a["overall_score"] - int(rev_penalty_a))
+                if rev_penalty_b > 0:
+                    rev_eval_b["overall_score"] = max(0, rev_eval_b["overall_score"] - int(rev_penalty_b))
+
+                # In reversed eval: "a" position has agent_b, "b" position has agent_a
+                # Map back: forward_a = eval_a score, forward_b = eval_b score
+                #           reversed_a = rev_eval_b score (agent_a in "b" slot)
+                #           reversed_b = rev_eval_a score (agent_b in "a" slot)
+                forward_result = {
+                    "overall_score": eval_a["overall_score"],
+                    "overall_score_b": eval_b["overall_score"],
+                }
+                reversed_result = {
+                    "overall_score": rev_eval_b["overall_score"],   # agent_a in reversed
+                    "overall_score_b": rev_eval_a["overall_score"],  # agent_b in reversed
+                }
+
+                pos_check = self.check_position_consistency(forward_result, reversed_result)
+                position_swapped = True
+                consistency = pos_check["consistency"]
+
+                # Use averaged scores from both orderings
+                eval_a["overall_score"] = pos_check["score_a"]
+                eval_b["overall_score"] = pos_check["score_b"]
+
+            # Determine winner (after style adjustment and position-swap averaging)
+            if consistency == "tie_forced":
+                # Position bias detected — force tie
+                winner = None
+                margin = 0
+                photo_finish = False
+            else:
+                winner, margin, photo_finish = self.determine_winner(
+                    eval_a["overall_score"], eval_b["overall_score"],
+                )
 
             # Get existing ratings for both agents
             target_id_a = battle["agent_a"]["target_id"]
@@ -336,6 +503,18 @@ class BattleEngine:
 
             duration_ms = int((time.time() - start_time) * 1000)
 
+            # Style penalties already applied above; record in integrity metadata
+            style_controlled = style_penalty_a > 0 or style_penalty_b > 0
+
+            integrity = self.build_integrity_metadata(
+                blind_enforced=battle.get("integrity", {}).get("blind_enforced", True),
+                position_swapped=position_swapped,
+                style_controlled=style_controlled,
+                consistency=consistency,
+                style_penalty_a=style_penalty_a,
+                style_penalty_b=style_penalty_b,
+            )
+
             # Build update
             update = {
                 "agent_a.name": eval_a.get("name", ""),
@@ -355,6 +534,7 @@ class BattleEngine:
                 "completed_at": datetime.utcnow(),
                 "status": BattleStatus.COMPLETED.value,
                 "rating_deltas": rating_deltas,
+                "integrity": integrity,
             }
 
             await col.update_one({"_id": battle_id}, {"$set": update})
@@ -379,37 +559,71 @@ class BattleEngine:
             raise
 
     async def _run_parallel_evals(self, battle, questions, evaluator_factory):
-        """Run evaluations for both agents in parallel."""
+        """Run evaluations for both agents in parallel.
+
+        Enforces blind battles: agent identity is stripped before judging.
+        Computes style penalties for formatting-based score inflation.
+        """
         import asyncio
         from src.core.mcp_client import MCPClient
 
-        async def evaluate_agent(target_url, questions):
+        blind = battle.get("integrity", {}).get("blind_enforced", True)
+
+        async def evaluate_agent(target_url, questions, label):
             client = MCPClient(target_url)
             try:
                 manifest = await client.connect_and_list_tools()
                 tool_responses = await client.run_challenge_questions(questions)
+
+                # Blind battle enforcement: strip identity before judging
+                if blind:
+                    for resp in tool_responses:
+                        resp.pop("server_name", None)
+                        resp.pop("server_url", None)
+                        resp.pop("manifest", None)
+                        if "meta" in resp:
+                            resp["meta"].pop("server_name", None)
+                            resp["meta"].pop("server_url", None)
+
                 evaluator = evaluator_factory()
                 target_id = hashlib.sha256(target_url.encode()).hexdigest()[:16]
                 result = await evaluator.evaluate_functional(
                     target_id, tool_responses, manifest,
                 )
+
+                # Compute style penalty from raw responses
+                style_penalty = 0.0
+                for resp in tool_responses:
+                    content = resp.get("content", resp.get("response", ""))
+                    if isinstance(content, str) and len(content) > 0:
+                        features = extract_style_features(content)
+                        style_penalty = max(style_penalty, compute_style_penalty(features))
+
                 return {
                     "overall_score": result.overall_score,
                     "scores": result.dimensions or {},
-                    "name": manifest.get("name", target_url),
+                    "name": manifest.get("name", target_url) if not blind else label,
+                    "style_penalty": style_penalty,
+                    "_real_name": manifest.get("name", target_url),
                 }
             except Exception as e:
                 logger.error(f"Evaluation failed for {target_url}: {e}")
                 return {
                     "overall_score": 0,
                     "scores": {},
-                    "name": target_url,
+                    "name": label if blind else target_url,
+                    "style_penalty": 0.0,
+                    "_real_name": target_url,
                 }
 
         eval_a, eval_b = await asyncio.gather(
-            evaluate_agent(battle["agent_a"]["target_url"], questions),
-            evaluate_agent(battle["agent_b"]["target_url"], questions),
+            evaluate_agent(battle["agent_a"]["target_url"], questions, "Agent A"),
+            evaluate_agent(battle["agent_b"]["target_url"], questions, "Agent B"),
         )
+
+        # Restore real names for storage (not for judging)
+        eval_a["name"] = eval_a.pop("_real_name", eval_a.get("name", ""))
+        eval_b["name"] = eval_b.pop("_real_name", eval_b.get("name", ""))
 
         return eval_a, eval_b
 

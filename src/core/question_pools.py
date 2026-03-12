@@ -59,6 +59,21 @@ QUESTION_POOLS: Dict[str, List[ChallengeQuestion]] = {
             domain="defi", difficulty="hard",
             reference_answer="Concentrated liquidity allocates capital within custom price ranges instead of full range. Provides 10-20x capital efficiency but requires active management.",
         ),
+        ChallengeQuestion(
+            question="What is a yield aggregator and how does it optimize returns across protocols?",
+            domain="defi", difficulty="medium",
+            reference_answer="Yield aggregators auto-compound and rebalance deposits across lending/LP protocols to maximize APY. Examples: Yearn vaults. They abstract complexity but add smart contract risk layers.",
+        ),
+        ChallengeQuestion(
+            question="Explain how oracle manipulation attacks work in DeFi lending protocols.",
+            domain="defi", difficulty="hard",
+            reference_answer="Attacker manipulates price oracle (e.g., low-liquidity AMM) to misrepresent collateral value, then borrows more than collateral is worth. Defense: TWAP oracles, multiple sources, Chainlink.",
+        ),
+        ChallengeQuestion(
+            question="What is a liquidity bootstrap pool and how does it differ from a standard AMM pool?",
+            domain="defi", difficulty="medium",
+            reference_answer="LBP uses time-weighted shifting ratios (e.g., 90/10 → 50/50) for fair price discovery during token launches. Discourages front-running and whale sniping unlike fixed-ratio pools.",
+        ),
     ],
     "solana": [
         ChallengeQuestion(
@@ -81,6 +96,26 @@ QUESTION_POOLS: Dict[str, List[ChallengeQuestion]] = {
             domain="solana", difficulty="hard",
             reference_answer="PoH uses sequential SHA-256 hash chain creating a verifiable delay function. Establishes temporal ordering before consensus, enabling high throughput.",
         ),
+        ChallengeQuestion(
+            question="What is the Solana Token Program and how do SPL tokens work?",
+            domain="solana", difficulty="easy",
+            reference_answer="SPL Token Program is the standard for fungible/non-fungible tokens on Solana. Tokens are stored in associated token accounts (ATAs). Uses mint authority and freeze authority for governance.",
+        ),
+        ChallengeQuestion(
+            question="How does Solana handle transaction fees and priority fees?",
+            domain="solana", difficulty="medium",
+            reference_answer="Base fee is 5000 lamports per signature. Priority fees (compute unit price) bid for block inclusion. 50% burned, 50% to validator. Higher priority = faster inclusion during congestion.",
+        ),
+        ChallengeQuestion(
+            question="What are Solana lookup tables and how do they reduce transaction size?",
+            domain="solana", difficulty="hard",
+            reference_answer="Address Lookup Tables (ALTs) store account addresses on-chain, letting transactions reference them by index instead of full 32-byte pubkey. Reduces transaction size from 1232 to ~200 bytes for multi-account txs.",
+        ),
+        ChallengeQuestion(
+            question="Explain the difference between Solana accounts and Ethereum storage.",
+            domain="solana", difficulty="medium",
+            reference_answer="Solana uses explicit account model — all state in separate accounts owned by programs. Ethereum uses implicit storage slots within contracts. Solana requires declaring all accounts upfront, enabling parallel execution.",
+        ),
     ],
     "security": [
         ChallengeQuestion(
@@ -98,6 +133,31 @@ QUESTION_POOLS: Dict[str, List[ChallengeQuestion]] = {
             domain="security", difficulty="medium",
             reference_answer="Creates multiple fake identities for disproportionate influence. Defenses: proof-of-stake, proof-of-work, reputation systems, identity verification.",
         ),
+        ChallengeQuestion(
+            question="What is a rugpull and what on-chain indicators can detect one?",
+            domain="security", difficulty="easy",
+            reference_answer="Rugpull: creator drains liquidity or mints tokens, crashing price. Indicators: unlocked LP tokens, mint authority retained, no timelock on admin functions, honeypot sell restrictions.",
+        ),
+        ChallengeQuestion(
+            question="Explain how access control vulnerabilities in smart contracts are exploited.",
+            domain="security", difficulty="medium",
+            reference_answer="Missing or incorrect access modifiers let unauthorized users call admin functions (mint, pause, withdraw). Common in proxy patterns where initializer can be re-called. Defense: OpenZeppelin AccessControl, Ownable.",
+        ),
+        ChallengeQuestion(
+            question="What is a cross-chain bridge exploit and why are bridges high-value targets?",
+            domain="security", difficulty="hard",
+            reference_answer="Bridges lock assets on chain A and mint on chain B. Exploits target validator sets, signature verification, or proof validation. High value because they hold large TVL. Examples: Wormhole ($320M), Ronin ($625M).",
+        ),
+        ChallengeQuestion(
+            question="How does transaction simulation help prevent security exploits?",
+            domain="security", difficulty="medium",
+            reference_answer="Simulation executes transaction against current state without committing. Reveals unexpected token transfers, approval changes, or fund movements before signing. Used by wallets like Phantom and Blowfish.",
+        ),
+        ChallengeQuestion(
+            question="What is a governance attack and how can DAOs defend against it?",
+            domain="security", difficulty="hard",
+            reference_answer="Attacker acquires enough governance tokens (often via flash loan) to pass malicious proposals. Defenses: time-locked execution, quorum requirements, vote escrow, snapshot-based voting, flash loan guards.",
+        ),
     ],
     "code-generation": [
         ChallengeQuestion(
@@ -110,6 +170,36 @@ QUESTION_POOLS: Dict[str, List[ChallengeQuestion]] = {
             domain="code-generation", difficulty="hard",
             reference_answer="Token bucket: initialize with capacity and refill rate. consume() checks tokens available, refills based on elapsed time. Thread-safe with locks.",
         ),
+        ChallengeQuestion(
+            question="Write a Python function to merge two sorted lists into one sorted list without using built-in sort.",
+            domain="code-generation", difficulty="easy",
+            reference_answer="Two-pointer approach: compare heads of both lists, append smaller. Handle remaining elements. O(n+m) time, O(n+m) space.",
+        ),
+        ChallengeQuestion(
+            question="Implement an LRU cache with O(1) get and put operations in Python.",
+            domain="code-generation", difficulty="hard",
+            reference_answer="Use OrderedDict or doubly-linked list + dict. get() moves to front. put() evicts LRU when full. Both O(1) via hash map + linked list.",
+        ),
+        ChallengeQuestion(
+            question="Write a Python decorator that retries a function up to N times on exception with exponential backoff.",
+            domain="code-generation", difficulty="medium",
+            reference_answer="Decorator accepts max_retries, base_delay. Wraps function in try/except loop, sleeps base_delay * 2^attempt between retries. Re-raises on final failure.",
+        ),
+        ChallengeQuestion(
+            question="Generate a Python async context manager for database connection pooling.",
+            domain="code-generation", difficulty="hard",
+            reference_answer="Use __aenter__/__aexit__ or @asynccontextmanager. Acquire connection from pool on enter, release on exit. Handle exceptions to avoid connection leaks. Support max_size and timeout.",
+        ),
+        ChallengeQuestion(
+            question="Write a Python function that validates an email address using regex.",
+            domain="code-generation", difficulty="easy",
+            reference_answer="Use re.match with pattern for local@domain.tld. Handle edge cases: dots, plus signs, subdomains. Should reject missing @, empty local, invalid TLD.",
+        ),
+        ChallengeQuestion(
+            question="Implement a simple pub/sub event system in Python with type-safe event handlers.",
+            domain="code-generation", difficulty="medium",
+            reference_answer="EventBus class with subscribe(event_type, handler) and publish(event). Use dict of event_type → list of callbacks. Optional: async handlers, type hints with Generic/Protocol.",
+        ),
     ],
     "general": [
         ChallengeQuestion(
@@ -121,6 +211,36 @@ QUESTION_POOLS: Dict[str, List[ChallengeQuestion]] = {
             question="Explain the difference between pre-payment and post-payment quality verification for AI agents.",
             domain="general", difficulty="medium",
             reference_answer="Pre-payment: verify competency BEFORE paying (challenge-response, benchmarks). Post-payment: observe after use (ratings, reputation). Pre-payment prevents paying for low-quality service.",
+        ),
+        ChallengeQuestion(
+            question="What is a Verifiable Credential and how does it apply to AI agent identity?",
+            domain="general", difficulty="medium",
+            reference_answer="W3C VC is a cryptographically signed claim about a subject (issuer → holder → verifier). For agents: issuer attests quality score, agent holds VC, client verifies before delegation.",
+        ),
+        ChallengeQuestion(
+            question="What is prompt engineering and why is it critical for AI agent quality?",
+            domain="general", difficulty="easy",
+            reference_answer="Crafting inputs to get optimal LLM outputs. Critical for agents: system prompts define behavior, tool descriptions affect selection accuracy, few-shot examples improve consistency.",
+        ),
+        ChallengeQuestion(
+            question="Explain the concept of AI agent hallucination and its risks in production.",
+            domain="general", difficulty="medium",
+            reference_answer="Hallucination: model generates plausible but factually wrong content. Risks: incorrect financial advice, fabricated data, fake references. Mitigation: RAG, fact-checking, confidence scoring.",
+        ),
+        ChallengeQuestion(
+            question="What is the EU AI Act and how does it affect AI agent deployment?",
+            domain="general", difficulty="hard",
+            reference_answer="EU regulation classifying AI by risk (unacceptable/high/limited/minimal). High-risk: requires conformity assessment, documentation, monitoring. Agents making decisions affecting people may be high-risk. Deadline: Aug 2026.",
+        ),
+        ChallengeQuestion(
+            question="How do embeddings work and why are they important for AI applications?",
+            domain="general", difficulty="easy",
+            reference_answer="Embeddings map text/data to dense vectors where similar items are close. Enable semantic search, RAG, clustering, recommendation. Models: text-embedding-3, BGE, E5. Stored in vector DBs like Qdrant.",
+        ),
+        ChallengeQuestion(
+            question="What is retrieval-augmented generation (RAG) and when should it be used?",
+            domain="general", difficulty="medium",
+            reference_answer="RAG retrieves relevant documents from a knowledge base and includes them in LLM context. Use when: data changes frequently, domain-specific knowledge needed, reducing hallucination. Components: embeddings, vector DB, retriever, generator.",
         ),
     ],
 

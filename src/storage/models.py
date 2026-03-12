@@ -282,6 +282,16 @@ class QuestionResponse(BaseModel):
     battle_discrimination: float = 0.0  # how well this Q separates the agents
 
 
+class BattleIntegrity(BaseModel):
+    """Arena integrity metadata (QO-009)."""
+    blind_enforced: bool = True
+    position_swapped: bool = False
+    style_controlled: bool = False
+    consistency: str = "not_checked"  # consistent | tie_forced | not_checked
+    style_penalties: Dict[str, float] = Field(default_factory=lambda: {"agent_a": 0.0, "agent_b": 0.0})
+    integrity_version: str = "1.0"
+
+
 class BattleResult(BaseModel):
     battle_id: str
     agent_a: BattleParticipant
@@ -300,6 +310,7 @@ class BattleResult(BaseModel):
     status: BattleStatus = BattleStatus.PENDING
     question_responses: List[QuestionResponse] = []
     rating_deltas: Optional[Dict[str, Any]] = None  # {agent_a: {axes}, agent_b: {axes}}
+    integrity: Optional[BattleIntegrity] = None
     error: Optional[str] = None
 
 

@@ -4,6 +4,11 @@ Multi-judge consensus evaluation (CollabEval pattern).
 Runs 2-3 diverse LLM judges in parallel, aggregates via median/agreement.
 Dramatically reduces single-judge bias (66% → 85% human agreement).
 
+Cost optimizations (Trust or Escalate pattern, ICLR 2025):
+- Single-judge early exit for decisive scores (>= 90 or <= 15)
+- Tighter agreement threshold for 2-judge consensus
+- Fuzzy-first routing for simple test types (error_handling, boundary, type_coercion)
+
 Fallback: if fewer than min_judges respond, use best available result.
 """
 import asyncio
@@ -12,9 +17,14 @@ import statistics
 from dataclasses import dataclass
 from typing import List, Optional
 
-from src.core.llm_judge import LLMJudge, JudgeResult
+from src.core.llm_judge import LLMJudge, JudgeResult, JudgeMetrics
 
 logger = logging.getLogger(__name__)
+
+# Confidence-based cascade thresholds
+# Scores at these extremes are highly unlikely to change with more judges
+SINGLE_JUDGE_HIGH_THRESHOLD = 90  # Score >= 90: clearly passing, skip 2nd judge
+SINGLE_JUDGE_LOW_THRESHOLD = 15   # Score <= 15: clearly failing, skip 2nd judge
 
 
 @dataclass
@@ -32,12 +42,20 @@ class ConsensusResult:
 
 
 def _build_judges_from_settings() -> List[LLMJudge]:
-    """Build a list of diverse LLM judges from available API keys."""
+    """Build a list of diverse LLM judges from available API keys.
+
+    Priority order optimized for cost: free providers first, paid last.
+    The first 3 judges are used for consensus (judge 1, judge 2, tiebreaker).
+    Keeping paid providers at the end ensures they're only used when free
+    providers are exhausted.
+    """
     from src.config import settings
 
     judges = []
 
-    # Priority 1: Cerebras (1M TPD, fast)
+    # --- Free providers first (consensus judges 1-3 should be free) ---
+
+    # Priority 1: Cerebras (free: 1M TPD, fast)
     if settings.cerebras_api_key:
         judges.append(LLMJudge(
             api_key=settings.cerebras_api_key,
@@ -46,7 +64,7 @@ def _build_judges_from_settings() -> List[LLMJudge]:
             base_url=settings.cerebras_base_url,
         ))
 
-    # Priority 2: Groq (500K TPD, fast)
+    # Priority 2: Groq (free: 500K TPD, fast)
     if settings.groq_api_key:
         judges.append(LLMJudge(
             api_key=settings.groq_api_key,
@@ -55,34 +73,7 @@ def _build_judges_from_settings() -> List[LLMJudge]:
             base_url="https://api.groq.com/openai/v1",
         ))
 
-    # Priority 3: Gemini (250 RPD, high quality)
-    if settings.gemini_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-            provider="gemini",
-            base_url=settings.gemini_base_url,
-        ))
-
-    # Priority 4: OpenAI (paid, highest quality)
-    if settings.openai_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            provider="openai",
-            base_url=settings.openai_base_url,
-        ))
-
-    # Priority 5: DeepSeek (credits, cheap)
-    if settings.deepseek_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.deepseek_api_key,
-            model=settings.deepseek_model,
-            provider="deepseek",
-            base_url=settings.deepseek_base_url,
-        ))
-
-    # Priority 6: OpenRouter (free models, 200 RPD)
+    # Priority 3: OpenRouter (free: Qwen3 80B, 200 RPD)
     if settings.openrouter_api_key:
         judges.append(LLMJudge(
             api_key=settings.openrouter_api_key,
@@ -91,13 +82,42 @@ def _build_judges_from_settings() -> List[LLMJudge]:
             base_url=settings.openrouter_base_url,
         ))
 
-    # Priority 7: Mistral (2 RPM, slow but free)
+    # Priority 4: Gemini (free: 250 RPD, high quality)
+    if settings.gemini_api_key:
+        judges.append(LLMJudge(
+            api_key=settings.gemini_api_key,
+            model=settings.gemini_model,
+            provider="gemini",
+            base_url=settings.gemini_base_url,
+        ))
+
+    # Priority 5: Mistral (free: 2 RPM, slow)
     if settings.mistral_api_key:
         judges.append(LLMJudge(
             api_key=settings.mistral_api_key,
             model=settings.mistral_model,
             provider="mistral",
             base_url=settings.mistral_base_url,
+        ))
+
+    # --- Paid providers last (only used if free providers exhausted) ---
+
+    # Priority 6: DeepSeek (credits, cheap)
+    if settings.deepseek_api_key:
+        judges.append(LLMJudge(
+            api_key=settings.deepseek_api_key,
+            model=settings.deepseek_model,
+            provider="deepseek",
+            base_url=settings.deepseek_base_url,
+        ))
+
+    # Priority 7: OpenAI (paid, highest quality — only as last resort)
+    if settings.openai_api_key:
+        judges.append(LLMJudge(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            provider="openai",
+            base_url=settings.openai_base_url,
         ))
 
     return judges
@@ -131,6 +151,9 @@ class ConsensusJudge:
         self._min_judges = min_judges
         self._fuzzy_judge = LLMJudge()  # No API key = fuzzy fallback
 
+        self.metrics = JudgeMetrics()
+        self._cascade_exits = 0  # Track confidence-based cascade early exits
+
         available = [j.provider for j in self._judges if j.is_llm_available]
         logger.info(
             f"ConsensusJudge: {len(available)} LLM judges available: {available}. "
@@ -157,9 +180,25 @@ class ConsensusJudge:
                 if rotator:
                     rotator.reset_exhausted()
 
-    async def ajudge(self, question: str, expected: str, answer: str) -> JudgeResult:
+    def log_metrics(self):
+        """Log optimization metrics summary. Call at end of evaluation."""
+        m = self.metrics
+        if m.total_judged == 0:
+            return
+        saved = m.fuzzy_routed + m.cache_hits
+        max_calls = m.total_judged * self._max_judges  # worst case: all judges for all items
+        actual_calls = m.llm_calls
+        pct_saved = f"{(1 - actual_calls / max_calls) * 100:.0f}%" if max_calls else "0%"
+        logger.info(
+            f"[Optimization] {m.total_judged} items judged: "
+            f"{m.llm_calls} LLM calls (of {max_calls} max), "
+            f"{m.fuzzy_routed} fuzzy-routed, {self._cascade_exits} cascade exits, "
+            f"{m.cache_hits} cached | {pct_saved} LLM calls saved"
+        )
+
+    async def ajudge(self, question: str, expected: str, answer: str, test_type: str = "") -> JudgeResult:
         """Judge with consensus. Returns JudgeResult for backward compatibility."""
-        result = await self.ajudge_consensus(question, expected, answer)
+        result = await self.ajudge_consensus(question, expected, answer, test_type=test_type)
         return JudgeResult(
             score=result.score,
             explanation=result.explanation,
@@ -169,17 +208,38 @@ class ConsensusJudge:
         )
 
     async def ajudge_consensus(
-        self, question: str, expected: str, answer: str
+        self, question: str, expected: str, answer: str, test_type: str = ""
     ) -> ConsensusResult:
         """
         Run multi-judge consensus evaluation.
 
         Strategy:
+        0. If test_type is fuzzy-routable, skip all LLM judges (use fuzzy scorer)
         1. Run first 2 judges in parallel
         2. If they agree → return immediately (early termination)
         3. If they disagree → run 3rd judge as tiebreaker
         4. Aggregate with median/majority logic
         """
+        from src.core.llm_judge import FUZZY_ROUTABLE_TEST_TYPES
+
+        self.metrics.total_judged += 1
+
+        # Optimization: route simple test types directly to fuzzy scorer
+        if test_type in FUZZY_ROUTABLE_TEST_TYPES:
+            result = self._fuzzy_judge._judge_fuzzy(question, expected, answer)
+            result.method = "fuzzy_routed"
+            self.metrics.fuzzy_routed += 1
+            return ConsensusResult(
+                score=result.score,
+                explanation=result.explanation,
+                method="fuzzy_routed",
+                individual_scores=[result.score],
+                individual_methods=["fuzzy_routed"],
+                agreement=True,
+                judges_used=0,
+                latency_ms=result.latency_ms,
+            )
+
         llm_judges = [j for j in self._judges if j.is_llm_available]
 
         if len(llm_judges) < self._min_judges:
@@ -209,31 +269,38 @@ class ConsensusJudge:
                     latency_ms=result.latency_ms,
                 )
 
-        # Phase 1: Run first 2 judges in parallel
-        first_two = llm_judges[:2]
-        tasks = [j.ajudge(question, expected, answer) for j in first_two]
-        results_phase1 = await asyncio.gather(*tasks, return_exceptions=True)
-
-        valid_results: List[JudgeResult] = []
-        for r in results_phase1:
-            if isinstance(r, JudgeResult):
-                valid_results.append(r)
-            else:
-                logger.warning(f"Judge failed: {r}")
-
-        if len(valid_results) < 1:
-            # All judges failed — fuzzy fallback
-            result = self._fuzzy_judge._judge_fuzzy(question, expected, answer)
+        # Phase 0.5: Confidence-based cascade — single-judge early exit
+        # Run 1st judge alone; if score is decisive, skip remaining judges
+        self.metrics.llm_calls += 1
+        first_result = await llm_judges[0].ajudge(question, expected, answer)
+        if first_result.score >= SINGLE_JUDGE_HIGH_THRESHOLD or first_result.score <= SINGLE_JUDGE_LOW_THRESHOLD:
+            self._cascade_exits += 1
+            logger.debug(
+                f"Cascade early exit: score={first_result.score} "
+                f"(threshold: >={SINGLE_JUDGE_HIGH_THRESHOLD} or <={SINGLE_JUDGE_LOW_THRESHOLD})"
+            )
             return ConsensusResult(
-                score=result.score,
-                explanation=result.explanation,
-                method="fuzzy",
-                individual_scores=[result.score],
-                individual_methods=["fuzzy"],
+                score=first_result.score,
+                explanation=f"Cascade ({first_result.method}): {first_result.explanation}",
+                method="cascade",
+                individual_scores=[first_result.score],
+                individual_methods=[first_result.method],
                 agreement=True,
                 judges_used=1,
-                latency_ms=result.latency_ms,
+                latency_ms=first_result.latency_ms,
             )
+
+        # Phase 1: Score was ambiguous — run 2nd judge
+        if len(llm_judges) >= 2:
+            try:
+                self.metrics.llm_calls += 1
+                second_result = await llm_judges[1].ajudge(question, expected, answer)
+                valid_results = [first_result, second_result]
+            except Exception as e:
+                logger.warning(f"Second judge failed: {e}")
+                valid_results = [first_result]
+        else:
+            valid_results = [first_result]
 
         if len(valid_results) == 1:
             r = valid_results[0]
@@ -268,6 +335,7 @@ class ConsensusJudge:
         # Phase 2: Disagreement — run 3rd judge as tiebreaker (if available)
         if len(llm_judges) >= 3:
             try:
+                self.metrics.llm_calls += 1
                 third_result = await llm_judges[2].ajudge(question, expected, answer)
                 valid_results.append(third_result)
                 scores.append(third_result.score)

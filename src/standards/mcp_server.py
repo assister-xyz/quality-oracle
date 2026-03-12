@@ -113,7 +113,7 @@ async def check_quality(server_url: str) -> str:
             "manifest_score": result.manifest_result.score if result.manifest_result else None,
             "questions_asked": result.questions_asked,
             "duration_ms": result.duration_ms,
-            "evaluation_tier": "full",
+            "evaluation_tier": "audited",
         }
         if result.dimensions:
             response["dimensions"] = {

@@ -1,6 +1,11 @@
-"""Evaluation mode configurations for quick/standard/full eval runs."""
+"""Evaluation mode configurations — SSL-style trust levels.
 
-from dataclasses import dataclass, field
+Verified  (DV) — spot-check, ~30 s, 1 judge
+Certified (OV) — full test suite + safety probes, ~90 s, 1 judge
+Audited   (EV) — comprehensive audit + consensus judging, ~3 min, 3 judges
+"""
+
+from dataclasses import dataclass
 from typing import Optional, Set
 
 
@@ -15,7 +20,7 @@ class EvalModeConfig:
 
 
 EVAL_MODES: dict[str, EvalModeConfig] = {
-    "quick": EvalModeConfig(
+    "verified": EvalModeConfig(
         max_tools=3,
         test_types={"happy_path"},
         use_consensus=False,
@@ -23,7 +28,7 @@ EVAL_MODES: dict[str, EvalModeConfig] = {
         run_consistency_check=False,
         max_judges=1,
     ),
-    "standard": EvalModeConfig(
+    "certified": EvalModeConfig(
         max_tools=None,
         test_types={"happy_path", "error_handling", "edge_case"},
         use_consensus=False,
@@ -31,7 +36,7 @@ EVAL_MODES: dict[str, EvalModeConfig] = {
         run_consistency_check=False,
         max_judges=1,
     ),
-    "full": EvalModeConfig(
+    "audited": EvalModeConfig(
         max_tools=None,
         test_types={"happy_path", "happy_path_variation", "error_handling", "edge_case", "boundary", "type_coercion"},
         use_consensus=True,

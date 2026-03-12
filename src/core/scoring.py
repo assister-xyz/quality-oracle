@@ -1,5 +1,6 @@
 """Score aggregation and tier calculation."""
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List
 from src.core.question_pools import determine_tier
 
 
@@ -72,3 +73,98 @@ def calculate_trend(scores_history: List[int]) -> str:
     if all(recent[i] >= recent[i + 1] for i in range(len(recent) - 1)):
         return "declining"
     return "stable"
+
+
+# ── Style Control (QO-009) ──────────────────────────────────────────────────
+
+# Baseline statistics for response style features.
+# Will be refined empirically via autoresearch (QO-013).
+STYLE_BASELINE = {
+    "mean_length": 800,
+    "std_length": 600,
+    "mean_markdown_elements": 5,
+    "std_markdown_elements": 4,
+}
+
+# Penalty coefficient per z-score above threshold (max 5 points per feature)
+STYLE_PENALTY_PER_ZSCORE = 2.0
+STYLE_PENALTY_THRESHOLD = 1.0  # Only penalize >1 standard deviation
+STYLE_PENALTY_MAX = 5.0  # Max penalty per feature
+
+
+def extract_style_features(response_text: str) -> Dict[str, float]:
+    """Extract style covariates from a response for bias control.
+
+    These features capture formatting/verbosity that can inflate LLM judge
+    scores without reflecting actual quality.
+    """
+    if not response_text:
+        return {
+            "response_length": 0,
+            "markdown_headers": 0,
+            "markdown_bold": 0,
+            "list_items": 0,
+            "code_blocks": 0,
+            "total_markdown_elements": 0,
+        }
+
+    md_headers = response_text.count("#")
+    md_bold = response_text.count("**")
+    list_items = len(re.findall(r"^[\-\*\d]+\.", response_text, re.MULTILINE))
+    code_blocks = response_text.count("```")
+
+    return {
+        "response_length": len(response_text),
+        "markdown_headers": md_headers,
+        "markdown_bold": md_bold,
+        "list_items": list_items,
+        "code_blocks": code_blocks,
+        "total_markdown_elements": md_headers + md_bold + list_items + code_blocks,
+    }
+
+
+def compute_style_penalty(style: Dict[str, float]) -> float:
+    """Compute a score penalty for excessive formatting/verbosity.
+
+    Only penalizes responses that are >1 standard deviation above baseline
+    on length or markdown density. Returns a positive number to subtract.
+    """
+    penalty = 0.0
+
+    # Length penalty
+    length_z = (
+        (style["response_length"] - STYLE_BASELINE["mean_length"])
+        / max(1, STYLE_BASELINE["std_length"])
+    )
+    if length_z > STYLE_PENALTY_THRESHOLD:
+        excess = length_z - STYLE_PENALTY_THRESHOLD
+        penalty += min(STYLE_PENALTY_MAX, excess * STYLE_PENALTY_PER_ZSCORE)
+
+    # Markdown density penalty
+    md_z = (
+        (style["total_markdown_elements"] - STYLE_BASELINE["mean_markdown_elements"])
+        / max(1, STYLE_BASELINE["std_markdown_elements"])
+    )
+    if md_z > STYLE_PENALTY_THRESHOLD:
+        excess = md_z - STYLE_PENALTY_THRESHOLD
+        penalty += min(STYLE_PENALTY_MAX, excess * STYLE_PENALTY_PER_ZSCORE)
+
+    return round(penalty, 2)
+
+
+def apply_style_adjustment(raw_score: float, response_text: str) -> Dict[str, any]:
+    """Apply style control to a raw score.
+
+    Returns dict with adjusted_score, style_features, and penalty applied.
+    """
+    style = extract_style_features(response_text)
+    penalty = compute_style_penalty(style)
+    adjusted = max(0, raw_score - penalty)
+
+    return {
+        "adjusted_score": int(round(adjusted)),
+        "raw_score": int(round(raw_score)),
+        "style_penalty": penalty,
+        "style_features": style,
+        "style_controlled": penalty > 0,
+    }

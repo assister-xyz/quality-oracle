@@ -87,7 +87,7 @@ async def test_connect_and_list_tools(mock_sse_session):
 async def test_connect_failure():
     """Should raise ConnectionError on connection failure."""
     with patch("src.core.mcp_client.sse_client", side_effect=Exception("refused")):
-        with pytest.raises(ConnectionError, match="Cannot connect"):
+        with pytest.raises(ConnectionError, match="Cannot reach"):
             await get_server_manifest("http://bad-server:9999/sse")
 
 
@@ -129,8 +129,17 @@ async def test_call_tool_error():
 @pytest.mark.asyncio
 async def test_get_server_manifest(mock_sse_session):
     """Should return manifest with server info and tools."""
+    # Mock the pre-flight HTTP check that get_server_manifest does
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_http_client = AsyncMock()
+    mock_http_client.head = AsyncMock(return_value=mock_response)
+    mock_http_client.post = AsyncMock(return_value=mock_response)
+    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+    mock_http_client.__aexit__ = AsyncMock(return_value=None)
+
     p1, p2 = _patch_sse(mock_sse_session)
-    with p1, p2:
+    with p1, p2, patch("src.core.mcp_client.httpx.AsyncClient", return_value=mock_http_client):
         manifest = await get_server_manifest("http://localhost:8010/sse")
     assert manifest["name"] == "TestServer"
     assert manifest["version"] == "1.0.0"

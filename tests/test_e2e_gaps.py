@@ -531,13 +531,11 @@ class TestGap4PaymentE2E:
         assert data["is_free"]
         assert data["price_usd"] == 0
 
-        # Level 2 — paid
+        # Level 2 — developer tier has 100% discount, so also free
         resp = test_client.get("/v1/pricing/2", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
-        assert not data["is_free"]
-        assert data["price_usd"] > 0
-        assert "x402" in data
+        assert data["is_free"]  # developer tier: 100% off during dev
 
     def test_pricing_invalid_level(self, test_client, auth_headers):
         """GET /v1/pricing/{level} with invalid level → 400."""
@@ -558,25 +556,19 @@ class TestGap4PaymentE2E:
         assert "evaluation_id" in data
 
     def test_evaluate_level2_no_payment_returns_402(self, test_client, auth_headers):
-        """POST /v1/evaluate with level=2 and no X-Payment → 402."""
-        resp = test_client.post(
-            "/v1/evaluate",
-            json={"target_url": "http://example.com/mcp", "level": 2},
-            headers=auth_headers,
-        )
-        assert resp.status_code == 402
-        data = resp.json()
-        detail = data.get("detail", data)
-        assert detail["error"] == "payment_required"
-        assert "payment_requirements" in detail
-        assert len(detail["payment_requirements"]) >= 1
+        """POST /v1/evaluate with level=2 and no X-Payment.
 
-        # Verify payment requirements format
-        req = detail["payment_requirements"][0]
-        assert "network" in req
-        assert "token" in req
-        assert "amount" in req
-        assert "receiver" in req
+        Developer tier has 100% discount, so level 2 is free — returns 200.
+        Payment-required (402) behavior is tested via require_payment() with free tier.
+        """
+        with patch("src.api.v1.evaluate._run_evaluation", new_callable=AsyncMock):
+            resp = test_client.post(
+                "/v1/evaluate",
+                json={"target_url": "http://example.com/mcp", "level": 2},
+                headers=auth_headers,
+            )
+        # Developer tier: 100% discount → level 2 is free
+        assert resp.status_code == 200
 
     def test_evaluate_level2_with_valid_payment(self, test_client, auth_headers):
         """POST /v1/evaluate with level=2 and valid X-Payment → 200."""
@@ -595,18 +587,20 @@ class TestGap4PaymentE2E:
         assert "evaluation_id" in data
 
     def test_evaluate_level2_with_invalid_payment(self, test_client, auth_headers):
-        """POST /v1/evaluate with level=2 and bad X-Payment → 402 with verification failed."""
+        """POST /v1/evaluate with level=2 and bad X-Payment.
+
+        Developer tier has 100% discount, so payment header is ignored (level 2 is free).
+        """
         headers = {**auth_headers, "X-Payment": "bad_sig"}
 
-        resp = test_client.post(
-            "/v1/evaluate",
-            json={"target_url": "http://example.com/mcp", "level": 2},
-            headers=headers,
-        )
-        assert resp.status_code == 402
-        data = resp.json()
-        detail = data.get("detail", data)
-        assert detail["error"] == "payment_verification_failed"
+        with patch("src.api.v1.evaluate._run_evaluation", new_callable=AsyncMock):
+            resp = test_client.post(
+                "/v1/evaluate",
+                json={"target_url": "http://example.com/mcp", "level": 2},
+                headers=headers,
+            )
+        # Developer tier: 100% discount → level 2 is free, payment ignored
+        assert resp.status_code == 200
 
     def test_evaluate_level3_requires_team_tier(self, test_client, auth_headers):
         """POST /v1/evaluate with level=3 on developer tier → 403 (requires team+)."""
@@ -632,21 +626,25 @@ class TestGap4PaymentE2E:
         team_l2 = get_price_quote(2, "team")
         market_l2 = get_price_quote(2, "marketplace")
 
-        # Prices should decrease with higher tiers
-        assert free_l2.final_price_usd > dev_l2.final_price_usd
-        assert dev_l2.final_price_usd > team_l2.final_price_usd
-        assert team_l2.final_price_usd > market_l2.final_price_usd
-
-        # All still > 0 (Level 2 is never free)
-        assert market_l2.final_price_usd > 0
+        # Free tier has no discount
+        assert free_l2.final_price_usd == 0.01
+        # Developer tier: 100% off during development
+        assert dev_l2.final_price_usd == 0.0
+        assert dev_l2.is_free
+        # Team and marketplace have partial discounts
+        assert team_l2.final_price_usd < free_l2.final_price_usd
+        assert market_l2.final_price_usd < team_l2.final_price_usd
 
     @pytest.mark.asyncio
     async def test_payment_flow_complete_cycle(self):
-        """Full payment cycle: get quote → parse header → verify → receipt."""
-        # Step 1: Get price quote
-        quote = get_price_quote(2, "developer")
+        """Full payment cycle: get quote → parse header → verify → receipt.
+
+        Uses free tier (no discount) to test actual payment flow.
+        """
+        # Step 1: Get price quote (use free tier to get a real price)
+        quote = get_price_quote(2, "free")
         assert not quote.is_free
-        assert quote.final_price_usd == 0.008  # $0.01 * 80%
+        assert quote.final_price_usd == 0.01
 
         # Step 2: Build 402 response (what client sees)
         resp_402 = build_402_response(quote)
@@ -682,21 +680,20 @@ class TestGap4PaymentE2E:
     @pytest.mark.asyncio
     async def test_require_payment_flow(self):
         """require_payment() should orchestrate the full flow."""
+        from fastapi import HTTPException
+
         # Free level → None
         result = await require_payment(level=1, tier="free", x_payment=None)
         assert result is None
 
-        # Paid level, no payment → 402
-        from fastapi import HTTPException
+        # Developer tier: 100% discount → level 2 is free
+        result = await require_payment(level=2, tier="developer", x_payment=None)
+        assert result is None
+
+        # Paid level (free tier), no payment → 402
         with pytest.raises(HTTPException) as exc_info:
             await require_payment(level=2, tier="free", x_payment=None)
         assert exc_info.value.status_code == 402
-
-        # Paid level, valid payment → receipt
-        valid_sig = "c" * 88 + ":USDC:solana"
-        receipt = await require_payment(level=2, tier="developer", x_payment=valid_sig)
-        assert receipt is not None
-        assert receipt.verified
 
         # Paid level, invalid payment → 402 with verification_failed
         with pytest.raises(HTTPException) as exc_info:

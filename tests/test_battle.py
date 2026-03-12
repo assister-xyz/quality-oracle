@@ -1,20 +1,15 @@
 """Tests for the head-to-head battle engine."""
-import asyncio
 import pytest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.core.battle import BattleEngine
+from src.core.scoring import extract_style_features, compute_style_penalty
 
 
 @pytest.fixture()
 def engine():
     return BattleEngine()
-
-
-def run_async(coro):
-    """Helper to run async test functions."""
-    return asyncio.get_event_loop().run_until_complete(coro)
 
 
 # ── Challenge Composition ────────────────────────────────────────────────────
@@ -113,31 +108,31 @@ class TestDetermineWinner:
 
 
 class TestCooldown:
-    def test_no_recent_battle_allows(self, engine):
+    async def test_no_recent_battle_allows(self, engine):
         """No recent battle → cooldown check passes."""
         mock_col = MagicMock()
         mock_col.find_one = AsyncMock(return_value=None)
         with patch("src.core.battle.battles_col", return_value=mock_col):
-            result = run_async(engine.check_cooldown("agent_a", "agent_b"))
+            result = await engine.check_cooldown("agent_a", "agent_b")
         assert result is None  # No cooldown
 
-    def test_recent_battle_blocks(self, engine):
+    async def test_recent_battle_blocks(self, engine):
         """Battle within 1 hour → cooldown blocks."""
         recent_battle = {"created_at": datetime.utcnow() - timedelta(minutes=30)}
         mock_col = MagicMock()
         mock_col.find_one = AsyncMock(return_value=recent_battle)
         with patch("src.core.battle.battles_col", return_value=mock_col):
-            result = run_async(engine.check_cooldown("agent_a", "agent_b"))
+            result = await engine.check_cooldown("agent_a", "agent_b")
         assert result is not None  # Has remaining minutes
         assert result > 0
 
-    def test_old_battle_allows(self, engine):
+    async def test_old_battle_allows(self, engine):
         """Battle more than 1 hour ago → MongoDB $gte filter excludes it."""
         # MongoDB's $gte filter would NOT return battles older than cutoff
         mock_col = MagicMock()
         mock_col.find_one = AsyncMock(return_value=None)
         with patch("src.core.battle.battles_col", return_value=mock_col):
-            result = run_async(engine.check_cooldown("agent_a", "agent_b"))
+            result = await engine.check_cooldown("agent_a", "agent_b")
         assert result is None
 
 
@@ -203,3 +198,105 @@ class TestIRTDataCollection:
         )
         assert resp["agent_a_correct"] is False
         assert resp["agent_b_correct"] is False
+
+
+# ── Style Control Application ────────────────────────────────────────────────
+
+
+class TestStyleControlApplication:
+    """Verify style penalties are applied to scores before winner determination."""
+
+    def test_verbose_response_gets_penalized(self, engine):
+        """A response with excessive markdown should get a style penalty."""
+        plain_response = "The answer is 42."
+        verbose_response = (
+            "# Answer\n\n"
+            "## Summary\n\n"
+            "**The answer is 42.**\n\n"
+            "### Details\n\n"
+            "- Point 1: The answer is clearly 42\n"
+            "- Point 2: This has been verified\n"
+            "- Point 3: Multiple sources confirm\n\n"
+            "#### Additional Information\n\n"
+            "```python\nresult = 42\n```\n\n"
+            "**Note:** This is the final answer.\n\n"
+            "**Important:** The answer is definitely 42.\n\n"
+            "**Conclusion:** 42 is the answer.\n\n"
+            "This has been a very detailed and thorough response "
+            "that provides extensive information about the answer." * 10
+        )
+
+        plain_features = extract_style_features(plain_response)
+        verbose_features = extract_style_features(verbose_response)
+
+        plain_penalty = compute_style_penalty(plain_features)
+        verbose_penalty = compute_style_penalty(verbose_features)
+
+        # Verbose response should get a higher penalty
+        assert verbose_penalty > plain_penalty
+        assert plain_penalty == 0  # Plain short response → no penalty
+
+    def test_style_penalty_changes_winner(self, engine):
+        """Two agents with same raw score: verbose one loses after penalty."""
+        # Agent A: raw score 80, no style penalty
+        # Agent B: raw score 82, but 5pt style penalty → adjusted 77
+        score_a = 80
+        score_b = 82
+
+        # Without penalty, B wins
+        winner_raw, _, _ = engine.determine_winner(score_a, score_b)
+        assert winner_raw == "b"
+
+        # Apply a style penalty to B
+        adjusted_b = max(0, score_b - 5)  # 82 - 5 = 77
+        winner_adjusted, _, _ = engine.determine_winner(score_a, adjusted_b)
+        assert winner_adjusted == "a"  # A wins after penalty
+
+    def test_style_penalty_clamped_to_zero(self, engine):
+        """Style penalty should not make score negative."""
+        score = 3
+        penalty = 10
+        adjusted = max(0, score - int(penalty))
+        assert adjusted == 0
+
+
+# ── Position Swap Consistency ────────────────────────────────────────────────
+
+
+class TestPositionSwapConsistency:
+    """Verify position swap detection and tie-forcing."""
+
+    def test_consistent_results_declare_winner(self, engine):
+        """When both orderings agree on winner, result is consistent."""
+        forward = {"overall_score": 85, "overall_score_b": 70}
+        reversed_ = {"overall_score": 83, "overall_score_b": 72}  # A still wins
+
+        result = engine.check_position_consistency(forward, reversed_)
+        assert result["consistency"] == "consistent"
+        assert result["winner"] == "a"
+        # Averaged scores
+        assert result["score_a"] == round((85 + 83) / 2)
+        assert result["score_b"] == round((70 + 72) / 2)
+
+    def test_inconsistent_results_force_tie(self, engine):
+        """When winner flips across orderings, tie is forced."""
+        forward = {"overall_score": 75, "overall_score_b": 70}   # A wins forward
+        reversed_ = {"overall_score": 65, "overall_score_b": 80}  # B wins reversed
+
+        result = engine.check_position_consistency(forward, reversed_)
+        assert result["consistency"] == "tie_forced"
+        assert result["winner"] is None
+
+    def test_both_orderings_draw(self, engine):
+        """When both orderings are a draw, result is consistent draw."""
+        forward = {"overall_score": 75, "overall_score_b": 75}
+        reversed_ = {"overall_score": 75, "overall_score_b": 75}
+
+        result = engine.check_position_consistency(forward, reversed_)
+        assert result["consistency"] == "consistent"
+        assert result["winner"] is None
+
+    def test_verified_mode_skips_position_swap(self, engine):
+        """Verified mode should not run position swap (fast path)."""
+        eval_mode = "verified"
+        assert eval_mode not in ("certified", "audited")

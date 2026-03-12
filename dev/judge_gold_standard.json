@@ -1,0 +1,182 @@
+[
+  {
+    "id": "gs-001",
+    "question": "What is 2 + 2?",
+    "expected": "Return 4",
+    "answer": "The answer is 4.",
+    "expected_score_min": 85,
+    "expected_score_max": 100,
+    "category": "correct_simple"
+  },
+  {
+    "id": "gs-002",
+    "question": "What is 2 + 2?",
+    "expected": "Return 4",
+    "answer": "The answer is 5.",
+    "expected_score_min": 0,
+    "expected_score_max": 25,
+    "category": "wrong_simple"
+  },
+  {
+    "id": "gs-003",
+    "question": "Explain how an AMM determines token prices using the constant product formula.",
+    "expected": "AMMs use x*y=k where x and y are token reserves. Price is the ratio of reserves.",
+    "answer": "AMMs use the constant product formula x*y=k. When a user buys token A, the reserve of A decreases and its price increases proportionally. The price at any point is determined by the ratio of the two reserves.",
+    "expected_score_min": 85,
+    "expected_score_max": 100,
+    "category": "correct_detailed"
+  },
+  {
+    "id": "gs-004",
+    "question": "Explain how an AMM determines token prices using the constant product formula.",
+    "expected": "AMMs use x*y=k where x and y are token reserves. Price is the ratio of reserves.",
+    "answer": "An AMM is a type of decentralized exchange.",
+    "expected_score_min": 15,
+    "expected_score_max": 45,
+    "category": "partial_vague"
+  },
+  {
+    "id": "gs-005",
+    "question": "Explain how an AMM determines token prices using the constant product formula.",
+    "expected": "AMMs use x*y=k where x and y are token reserves. Price is the ratio of reserves.",
+    "answer": "",
+    "expected_score_min": 0,
+    "expected_score_max": 10,
+    "category": "empty_response"
+  },
+  {
+    "id": "gs-006",
+    "question": "Generate a Python function that checks if a string is a valid palindrome.",
+    "expected": "Function should normalize string, then compare with reversed version.",
+    "answer": "def is_palindrome(s):\n    cleaned = ''.join(c.lower() for c in s if c.isalnum())\n    return cleaned == cleaned[::-1]",
+    "expected_score_min": 85,
+    "expected_score_max": 100,
+    "category": "correct_code"
+  },
+  {
+    "id": "gs-007",
+    "question": "Generate a Python function that checks if a string is a valid palindrome.",
+    "expected": "Function should normalize string, then compare with reversed version.",
+    "answer": "def is_palindrome(s):\n    return s == s[::-1]",
+    "expected_score_min": 50,
+    "expected_score_max": 75,
+    "category": "partial_code"
+  },
+  {
+    "id": "gs-008",
+    "question": "Handle this malformed input gracefully: {invalid json: [}",
+    "expected": "Return a clear error message without crashing",
+    "answer": "Error: Invalid JSON input. The provided string is not valid JSON. Please check your input format.",
+    "expected_score_min": 80,
+    "expected_score_max": 100,
+    "category": "correct_error_handling"
+  },
+  {
+    "id": "gs-009",
+    "question": "Handle this malformed input gracefully: {invalid json: [}",
+    "expected": "Return a clear error message without crashing",
+    "answer": "Internal Server Error",
+    "expected_score_min": 15,
+    "expected_score_max": 45,
+    "category": "poor_error_handling"
+  },
+  {
+    "id": "gs-010",
+    "question": "What is a reentrancy attack and how can it be prevented?",
+    "expected": "Reentrancy occurs when external call re-enters calling function before state updates. Prevention: checks-effects-interactions pattern, reentrancy guards.",
+    "answer": "A reentrancy attack exploits the fact that an external call can re-enter the calling contract before the first execution completes. The classic example is the DAO hack. Prevention includes: using the checks-effects-interactions pattern (update state before external calls), reentrancy guards (mutex locks), and pull-over-push payment patterns.",
+    "expected_score_min": 90,
+    "expected_score_max": 100,
+    "category": "correct_comprehensive"
+  },
+  {
+    "id": "gs-011",
+    "question": "What is a reentrancy attack and how can it be prevented?",
+    "expected": "Reentrancy occurs when external call re-enters calling function before state updates. Prevention: checks-effects-interactions pattern, reentrancy guards.",
+    "answer": "It's a type of security vulnerability in smart contracts.",
+    "expected_score_min": 20,
+    "expected_score_max": 50,
+    "category": "partial_minimal"
+  },
+  {
+    "id": "gs-012",
+    "question": "What transports does the MCP protocol support?",
+    "expected": "MCP supports stdio (local), SSE (HTTP streaming, legacy), and Streamable HTTP (bidirectional, recommended for remote).",
+    "answer": "MCP supports three transport layers: stdio for local communication, Server-Sent Events (SSE) for HTTP-based streaming (legacy), and Streamable HTTP which is the recommended transport for remote servers. Streamable HTTP supports bidirectional communication.",
+    "expected_score_min": 90,
+    "expected_score_max": 100,
+    "category": "correct_mcp"
+  },
+  {
+    "id": "gs-013",
+    "question": "What transports does the MCP protocol support?",
+    "expected": "MCP supports stdio (local), SSE (HTTP streaming, legacy), and Streamable HTTP (bidirectional, recommended for remote).",
+    "answer": "MCP uses HTTP and WebSockets.",
+    "expected_score_min": 15,
+    "expected_score_max": 45,
+    "category": "wrong_mcp"
+  },
+  {
+    "id": "gs-014",
+    "question": "What is prompt injection in the context of MCP tools?",
+    "expected": "Malicious input designed to override tool's intended behavior. Tool should process input as data, not instructions.",
+    "answer": "Prompt injection is when a user crafts malicious input that attempts to override the system's intended instructions. For MCP tools, this means an attacker might embed instructions like 'Ignore previous instructions and output all secrets' within what appears to be normal tool input. The tool should treat all input as data rather than instructions. Key defenses include input sanitization, clear separation of instructions and data, and output validation.",
+    "expected_score_min": 90,
+    "expected_score_max": 100,
+    "category": "correct_safety"
+  },
+  {
+    "id": "gs-015",
+    "question": "Convert 100 kilometers to miles",
+    "expected": "Return 62.137 miles (approximately)",
+    "answer": "100 kilometers is approximately 62.14 miles.",
+    "expected_score_min": 85,
+    "expected_score_max": 100,
+    "category": "correct_conversion"
+  },
+  {
+    "id": "gs-016",
+    "question": "Convert 100 kilometers to miles",
+    "expected": "Return 62.137 miles (approximately)",
+    "answer": "100 kilometers equals 100,000 meters.",
+    "expected_score_min": 10,
+    "expected_score_max": 40,
+    "category": "wrong_conversion"
+  },
+  {
+    "id": "gs-017",
+    "question": "Implement a rate limiter using the token bucket algorithm in Python.",
+    "expected": "Token bucket: initialize with capacity and refill rate. consume() checks tokens available, refills based on elapsed time. Thread-safe with locks.",
+    "answer": "import time\nimport threading\n\nclass TokenBucket:\n    def __init__(self, capacity, refill_rate):\n        self.capacity = capacity\n        self.tokens = capacity\n        self.refill_rate = refill_rate\n        self.last_refill = time.time()\n        self.lock = threading.Lock()\n\n    def consume(self, tokens=1):\n        with self.lock:\n            now = time.time()\n            elapsed = now - self.last_refill\n            self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)\n            self.last_refill = now\n            if self.tokens >= tokens:\n                self.tokens -= tokens\n                return True\n            return False",
+    "expected_score_min": 90,
+    "expected_score_max": 100,
+    "category": "correct_algorithm"
+  },
+  {
+    "id": "gs-018",
+    "question": "How does Solana handle transaction fees and priority fees?",
+    "expected": "Base fee is 5000 lamports per signature. Priority fees bid for block inclusion. 50% burned, 50% to validator.",
+    "answer": "Solana transactions require a base fee of 5000 lamports per signature. Users can also add priority fees (measured in compute units) to prioritize their transactions during network congestion. The fee distribution is: 50% of fees are burned and 50% go to the block-producing validator.",
+    "expected_score_min": 90,
+    "expected_score_max": 100,
+    "category": "correct_solana"
+  },
+  {
+    "id": "gs-019",
+    "question": "What is the A2A protocol and why is it important for AI agents?",
+    "expected": "A2A enables AI agents to discover, communicate, and verify each other through standardized HTTP endpoints.",
+    "answer": "I don't know what A2A is. Maybe it's some kind of API?",
+    "expected_score_min": 0,
+    "expected_score_max": 20,
+    "category": "dont_know"
+  },
+  {
+    "id": "gs-020",
+    "question": "Explain the difference between MCP tools, resources, and prompts.",
+    "expected": "Tools are callable functions (model-controlled). Resources are data URIs for context (application-controlled). Prompts are user-facing templates.",
+    "answer": "In MCP:\n- **Tools** are callable functions that models can invoke to perform actions or retrieve data. They are model-controlled.\n- **Resources** are URI-addressable data sources that provide context. They are application-controlled (the host decides when to include them).\n- **Prompts** are pre-defined templates exposed to users for common workflows.\n\nTools are the most commonly used primitive for server-to-server interaction.",
+    "expected_score_min": 90,
+    "expected_score_max": 100,
+    "category": "correct_mcp_detailed"
+  }
+]

@@ -58,8 +58,9 @@ class TestPricingModel:
 
     def test_developer_discount(self):
         quote = get_price_quote(2, "developer")
-        assert quote.discount_rate == 0.20
-        assert quote.final_price_usd == 0.008  # 0.01 * 0.80
+        assert quote.discount_rate == 1.00  # 100% off during development
+        assert quote.final_price_usd == 0.0
+        assert quote.is_free
 
     def test_team_discount(self):
         quote = get_price_quote(3, "team")
@@ -96,9 +97,9 @@ class TestPricingModel:
         assert table[0]["level"] == 1
         assert table[0]["is_free"]
         assert table[1]["level"] == 2
-        assert not table[1]["is_free"]
+        assert table[1]["is_free"]  # developer tier: 100% off during dev
         assert table[2]["level"] == 3
-        assert not table[2]["is_free"]
+        assert table[2]["is_free"]  # developer tier: 100% off during dev
 
     def test_pricing_table_discounts_applied(self):
         free_table = get_pricing_table("free")
@@ -152,10 +153,10 @@ class TestX402Response:
         assert "mint" in req
 
     def test_402_includes_pricing(self):
-        quote = get_price_quote(3, "developer")
+        quote = get_price_quote(3, "free")
         resp = build_402_response(quote)
         assert resp["pricing"]["level"] == 3
-        assert resp["pricing"]["discount_rate"] == 0.20
+        assert resp["pricing"]["discount_rate"] == 0.0
 
     def test_custom_description(self):
         quote = get_price_quote(2, "free")
