@@ -16,6 +16,7 @@ from src.storage.models import (
     EvalLevel,
     EvalMode,
     WebhookPayload,
+    normalize_eval_mode,
 )
 from src.storage.mongodb import evaluations_col, scores_col, score_history_col
 from src.core.evaluator import Evaluator
@@ -239,12 +240,23 @@ async def get_evaluation_status(
     if created_at and completed_at:
         duration_ms = int((completed_at - created_at).total_seconds() * 1000)
 
+    # Extract gaming signals from scores
+    gaming_risk = None
+    timing_anomaly = None
+    scores_data = doc.get("scores")
+    if scores_data and isinstance(scores_data, dict):
+        gr = scores_data.get("gaming_risk")
+        if gr and isinstance(gr, dict):
+            gaming_risk = gr.get("level")
+            timing_anomaly = gr.get("timing_anomaly")
+
     return EvaluationStatus(
         evaluation_id=evaluation_id,
         status=EvalStatus(doc["status"]),
         progress_pct=doc.get("progress_pct", 0),
         score=score,
         tier=tier,
+        eval_mode=normalize_eval_mode(doc.get("eval_mode")),
         evaluation_version=doc.get("evaluation_version"),
         report=report,
         scores=doc.get("scores"),
@@ -253,6 +265,8 @@ async def get_evaluation_status(
         result=result,
         error=doc.get("error"),
         duration_ms=duration_ms,
+        gaming_risk=gaming_risk,
+        timing_anomaly=timing_anomaly,
     )
 
 
@@ -270,7 +284,7 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         mode_config = EVAL_MODES[request.eval_mode.value]
         logger.info(f"[{evaluation_id[:8]}] Eval mode: {request.eval_mode.value} (max_tools={mode_config.max_tools}, tests={mode_config.test_types}, consensus={mode_config.use_consensus})")
 
-        # Use ConsensusJudge for full mode, LLMJudge for quick/standard
+        # Use ConsensusJudge for audited mode, LLMJudge for verified/certified
         if mode_config.use_consensus:
             from src.core.consensus_judge import ConsensusJudge
             judge = ConsensusJudge(max_judges=mode_config.max_judges)
@@ -278,7 +292,7 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             judge = _get_judge()
         # Reset any exhausted API keys from prior evaluations
         judge.reset_keys()
-        evaluator = Evaluator(judge)
+        evaluator = Evaluator(judge, eval_mode=request.eval_mode.value)
 
         # Step 1: Fetch real manifest from MCP server
         logger.info(f"[{evaluation_id[:8]}] Step 1: Fetching manifest from {request.target_url}")
@@ -486,6 +500,78 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         eval_duration_ms = int((_time.time() - eval_start) * 1000)
         logger.info(f"[{evaluation_id[:8]}] Scores aggregated: overall={scores.get('overall_score')} tier={scores.get('tier')} duration={eval_duration_ms}ms")
 
+        # Log cost optimization metrics
+        if hasattr(judge, 'log_metrics'):
+            judge.log_metrics()
+
+        # ── Anti-gaming analysis ─────────────────────────────────────────
+        gaming_risk_data = None
+        try:
+            from src.core.anti_gaming import (
+                analyze_response_timing,
+                fingerprint_response,
+                check_fingerprints_batch,
+                compute_gaming_risk,
+                log_paraphrase,
+            )
+
+            # Collect response times and fingerprints from tool responses
+            response_times = []
+            fingerprints = []
+            paraphrase_entries = []
+
+            if request.level != EvalLevel.MANIFEST:
+                for tool_name, responses in tool_responses.items():
+                    for resp in responses:
+                        if resp.get("latency_ms"):
+                            response_times.append(float(resp["latency_ms"]))
+                        answer_text = resp.get("answer") or resp.get("content") or ""
+                        question_text = resp.get("question") or tool_name
+                        if answer_text:
+                            fp = fingerprint_response(question_text, answer_text)
+                            fingerprints.append(fp)
+                            paraphrase_entries.append({
+                                "tool": tool_name,
+                                "question_hash": fp.question_hash,
+                                "response_hash": fp.response_hash,
+                                "method": "template" if request.eval_mode.value == "verified" else "llm",
+                            })
+
+            # Timing analysis
+            timing = analyze_response_timing(response_times)
+
+            # Fingerprint check against history
+            if fingerprints:
+                fingerprints = await check_fingerprints_batch(
+                    target_id=request.target_url,
+                    evaluation_id=evaluation_id,
+                    fingerprints=fingerprints,
+                )
+
+            # Compute risk
+            gaming_risk = compute_gaming_risk(timing, fingerprints)
+            gaming_risk_data = gaming_risk.to_dict()
+
+            # Apply confidence penalty
+            if gaming_risk.confidence_penalty > 0:
+                original_conf = scores.get("confidence", 0)
+                scores["confidence"] = max(0.05, original_conf - gaming_risk.confidence_penalty)
+                logger.warning(
+                    f"[{evaluation_id[:8]}] Gaming risk={gaming_risk.level}: "
+                    f"confidence {original_conf:.2f} → {scores['confidence']:.2f}"
+                )
+
+            scores["gaming_risk"] = gaming_risk_data
+
+            # Store paraphrase audit trail
+            if paraphrase_entries:
+                await log_paraphrase(evaluation_id, request.target_url, paraphrase_entries)
+
+            logger.info(f"[{evaluation_id[:8]}] Anti-gaming: risk={gaming_risk.level} duplicates={gaming_risk.duplicate_responses} timing_anomaly={timing.is_suspicious}")
+
+        except Exception as e:
+            logger.warning(f"[{evaluation_id[:8]}] Anti-gaming analysis failed (non-fatal): {e}")
+
         # Create attestation
         logger.info(f"[{evaluation_id[:8]}] Creating attestation...")
         attestation = create_attestation(
@@ -494,6 +580,7 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             target_name=manifest.get("name", request.target_url),
             evaluation_result=scores,
             evaluation_version=EVALUATION_VERSION,
+            eval_mode=request.eval_mode.value,
         )
         attestation_id = attestation["_id"]
         from src.storage.mongodb import attestations_col
@@ -534,6 +621,8 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                     "safety_report": scores.get("safety_report", []),
                     "latency_stats": scores.get("latency_stats", {}),
                     "duration_ms": eval_duration_ms,
+                    "last_eval_mode": request.eval_mode.value,
+                    "gaming_risk": gaming_risk_data.get("level") if gaming_risk_data else None,
                 },
                 "$inc": {"evaluation_count": 1},
                 "$setOnInsert": {"first_evaluated_at": now},
@@ -556,6 +645,7 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             "tier": scores["tier"],
             "confidence": scores["confidence"],
             "evaluation_version": EVALUATION_VERSION,
+            "eval_mode": request.eval_mode.value,
             "domain_scores": scores.get("domain_scores", {}),
             "recorded_at": now,
             "delta_from_previous": delta,

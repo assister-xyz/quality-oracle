@@ -84,6 +84,7 @@ def create_attestation(
     evaluation_version: str = "v1.0",
     issuer: str | None = None,
     validity_days: int | None = None,
+    eval_mode: str | None = None,
 ) -> dict:
     """
     Create an AQVC attestation as a signed JWT.
@@ -115,6 +116,7 @@ def create_attestation(
         "quality": {
             "score": evaluation_result.get("overall_score", 0),
             "tier": evaluation_result.get("tier", "failed"),
+            "trust_level": eval_mode,
             "confidence": evaluation_result.get("confidence", 0),
             "evaluation_level": evaluation_result.get("level", 2),
             "domains": evaluation_result.get("domains", []),
@@ -129,6 +131,22 @@ def create_attestation(
             "connection_strategy": evaluation_result.get("connection_strategy", "sse"),
         },
     }
+
+    # Add AIUC-1 alignment section
+    try:
+        from src.standards.aiuc1_mapping import generate_aiuc1_report
+        aiuc1_report = generate_aiuc1_report(evaluation_result)
+        aqvc_payload["aiuc1_alignment"] = {
+            "standard": "AIUC-1",
+            "version": aiuc1_report["aiuc1_version"],
+            "coverage_percentage": aiuc1_report["coverage_percentage"],
+            "mandatory_coverage": aiuc1_report["mandatory_coverage"],
+            "controls_fully_covered": aiuc1_report["controls_fully_covered"],
+            "controls_partially_covered": aiuc1_report["controls_partially_covered"],
+            "controls_not_covered": aiuc1_report["controls_not_covered"],
+        }
+    except Exception as e:
+        logger.warning(f"Failed to generate AIUC-1 alignment: {e}")
 
     # Sign as JWT (Ed25519)
     key = _get_or_generate_key()

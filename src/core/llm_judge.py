@@ -268,12 +268,22 @@ def _score_error_response(expected: str, answer: str) -> Tuple[int, str]:
         return 15, "Unexpected error in response"
 
 
+# Test types that can be reliably scored by the fuzzy scorer without LLM.
+# These produce structured error messages, type errors, or boundary violations
+# where keyword/pattern matching is sufficient.
+FUZZY_ROUTABLE_TEST_TYPES = frozenset({
+    "error_handling",
+    "type_coercion",
+    "boundary",
+})
+
+
 @dataclass
 class JudgeResult:
     """Result from the LLM judge evaluation."""
     score: int  # 0-100
     explanation: str
-    method: str  # "llm" or "fuzzy"
+    method: str  # "llm", "fuzzy", or "fuzzy_routed"
     cached: bool = False
     latency_ms: int = 0
 
@@ -316,6 +326,30 @@ class _KeyRotator:
     @property
     def available_count(self) -> int:
         return len([k for k in self._keys if k not in self._exhausted])
+
+
+@dataclass
+class JudgeMetrics:
+    """Tracks cost optimization metrics for a single evaluation session."""
+    llm_calls: int = 0
+    fuzzy_routed: int = 0
+    cache_hits: int = 0
+    total_judged: int = 0
+
+    def summary(self) -> str:
+        saved = self.fuzzy_routed + self.cache_hits
+        pct = f"{saved / self.total_judged * 100:.0f}%" if self.total_judged else "0%"
+        return (
+            f"Judge metrics: {self.total_judged} total, "
+            f"{self.llm_calls} LLM, {self.fuzzy_routed} fuzzy-routed, "
+            f"{self.cache_hits} cached ({pct} LLM calls saved)"
+        )
+
+    def reset(self):
+        self.llm_calls = 0
+        self.fuzzy_routed = 0
+        self.cache_hits = 0
+        self.total_judged = 0
 
 
 class LLMJudge:
@@ -367,6 +401,7 @@ class LLMJudge:
         self.fallback2_provider = fallback2_provider
         self._cache: Dict[str, CacheEntry] = {}
         self._llm_available = bool(self.api_key)
+        self.metrics = JudgeMetrics()
 
         if self._llm_available:
             keys_info = []
@@ -385,6 +420,13 @@ class LLMJudge:
         for rotator in [self._primary_rotator, self._fallback_rotator, self._fallback2_rotator]:
             if rotator:
                 rotator.reset_exhausted()
+
+    def log_metrics(self):
+        """Log optimization metrics summary. Call at end of evaluation."""
+        m = self.metrics
+        if m.total_judged == 0:
+            return
+        logger.info(f"[Optimization] {m.summary()}")
 
     def _provider_base_url(self, provider: str) -> str:
         """Get default base URL for a provider."""
@@ -475,11 +517,27 @@ class LLMJudge:
             rotator.rotate(exhausted=True)
         return None
 
-    async def ajudge(self, question: str, expected: str, answer: str) -> JudgeResult:
-        """Judge a response asynchronously. Primary → fallback → fuzzy with key rotation."""
+    async def ajudge(self, question: str, expected: str, answer: str, test_type: str = "") -> JudgeResult:
+        """Judge a response asynchronously. Primary → fallback → fuzzy with key rotation.
+
+        If test_type is a simple type (error_handling, type_coercion, boundary),
+        skips the LLM entirely and uses the fuzzy scorer directly — saves ~$0 per call.
+        """
+        self.metrics.total_judged += 1
+
+        # Optimization: route simple test types directly to fuzzy scorer
+        if test_type in FUZZY_ROUTABLE_TEST_TYPES:
+            start = time.time()
+            result = self._judge_fuzzy(question, expected, answer)
+            result.method = "fuzzy_routed"
+            result.latency_ms = int((time.time() - start) * 1000)
+            self.metrics.fuzzy_routed += 1
+            return result
+
         key = self._cache_key(question, expected, answer)
         cached = self._get_cached(key)
         if cached is not None:
+            self.metrics.cache_hits += 1
             return cached
 
         start = time.time()
@@ -493,6 +551,7 @@ class LLMJudge:
             if result is not None:
                 result.latency_ms = int((time.time() - start) * 1000)
                 self._store_cache(key, result)
+                self.metrics.llm_calls += 1
                 return result
 
         # Try fallback provider (with key rotation)
@@ -505,6 +564,7 @@ class LLMJudge:
             if result is not None:
                 result.latency_ms = int((time.time() - start) * 1000)
                 self._store_cache(key, result)
+                self.metrics.llm_calls += 1
                 return result
 
         # Try fallback2 provider (with key rotation)
@@ -517,6 +577,7 @@ class LLMJudge:
             if result is not None:
                 result.latency_ms = int((time.time() - start) * 1000)
                 self._store_cache(key, result)
+                self.metrics.llm_calls += 1
                 return result
 
         # Fuzzy fallback

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from src.storage.mongodb import scores_col
 from src.storage.cache import get_cached_score, cache_score
-from src.storage.models import ScoreResponse, QualityTier, TargetType
+from src.storage.models import ScoreResponse, QualityTier, TargetType, normalize_eval_mode
 from src.auth.dependencies import get_api_key
 from src.auth.rate_limiter import check_score_lookup_limit, add_rate_limit_headers
 
@@ -49,7 +49,7 @@ async def get_score(
                 tests_total=tdata.get("tests_total", 0),
             )
 
-    response = ScoreResponse(
+    resp_data = ScoreResponse(
         target_id=doc["target_id"],
         target_type=TargetType(doc.get("target_type", "mcp_server")),
         score=doc.get("current_score", 0),
@@ -58,12 +58,13 @@ async def get_score(
         evaluation_count=doc.get("evaluation_count", 0),
         last_evaluated_at=doc.get("last_evaluated_at"),
         tool_scores=parsed_tool_scores,
+        last_eval_mode=normalize_eval_mode(doc.get("last_eval_mode")),
     )
 
     # Cache for 5 min
-    await cache_score(target_id, response.model_dump(mode="json"))
+    await cache_score(target_id, resp_data.model_dump(mode="json"))
 
-    return response
+    return resp_data
 
 
 @router.get("/scores")
@@ -111,6 +112,7 @@ async def list_scores(
             "safety_report": doc.get("safety_report", []),
             "latency_stats": doc.get("latency_stats", {}),
             "duration_ms": doc.get("duration_ms"),
+            "last_eval_mode": normalize_eval_mode(doc.get("last_eval_mode")),
         })
 
     total = await scores_col().count_documents(query)
