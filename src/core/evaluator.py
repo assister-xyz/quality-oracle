@@ -15,6 +15,8 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
 from src.core.llm_judge import LLMJudge, JudgeResult
 from src.core.paraphraser import QuestionParaphraser
+from src.core.difficulty_calibration import DifficultyTracker
+from src.core.scoring import apply_style_adjustment
 from src.core.question_pools import (
     QuestionSelector,
     ChallengeQuestion,
@@ -68,6 +70,9 @@ class EvaluationResult:
         self.process_quality_report: Optional[dict] = None
         self.latency_stats: Optional[Dict[str, int]] = None
 
+        # Style control
+        self.style_report: Optional[dict] = None
+
         # Anti-gaming signals
         self.gaming_risk: Optional[dict] = None
 
@@ -92,6 +97,8 @@ class EvaluationResult:
             d["process_quality"] = self.process_quality_report
         if self.latency_stats:
             d["latency"] = self.latency_stats
+        if self.style_report:
+            d["style_report"] = self.style_report
         if self.gaming_risk:
             d["gaming_risk"] = self.gaming_risk
         return d
@@ -111,6 +118,7 @@ class Evaluator:
         self.question_selector = QuestionSelector()
         self.eval_mode = eval_mode
         self.paraphraser = QuestionParaphraser(llm_judge, eval_mode=eval_mode) if paraphrase else None
+        self.difficulty_tracker = DifficultyTracker()
 
     def validate_manifest(self, manifest: dict) -> ManifestValidationResult:
         """Level 1: Validate MCP server manifest for completeness and quality."""
@@ -205,15 +213,28 @@ class Evaluator:
                     test_type=resp.get("test_type", ""),
                 )
                 judged_count += 1
-                tool_scores.append(judge_result.score)
-                logger.debug(f"[evaluate_functional] Judged {judged_count}/{total_responses}: {tool_name} score={judge_result.score} via {judge_result.method}")
-                if judge_result.score >= 50:
+
+                # Style control: penalize verbose/over-formatted responses
+                response_text = resp.get("answer", "")
+                style_adj = apply_style_adjustment(judge_result.score, response_text)
+                adjusted_score = style_adj["adjusted_score"]
+
+                tool_scores.append(adjusted_score)
+                self.difficulty_tracker.record(
+                    f"func_{tool_name}_{case_idx - 1}",
+                    passed=adjusted_score >= 70,
+                )
+                logger.debug(f"[evaluate_functional] Judged {judged_count}/{total_responses}: {tool_name} score={adjusted_score} (raw={judge_result.score}, penalty={style_adj['style_penalty']}) via {judge_result.method}")
+                if adjusted_score >= 50:
                     tests_passed += 1
 
                 result.judge_responses.append({
                     "tool": tool_name,
                     "question": q,
-                    "score": judge_result.score,
+                    "score": adjusted_score,
+                    "raw_score": judge_result.score,
+                    "style_penalty": style_adj["style_penalty"],
+                    "style_features": style_adj["style_features"],
                     "explanation": judge_result.explanation,
                     "method": judge_result.method,
                     "test_type": resp.get("test_type", "unknown"),
@@ -226,6 +247,17 @@ class Evaluator:
                 "tests_total": len(responses),
             }
             all_scores.extend(tool_scores)
+
+        # Aggregate style report
+        penalties = [jr.get("style_penalty", 0) for jr in result.judge_responses]
+        penalized_count = sum(1 for p in penalties if p > 0)
+        if penalties:
+            result.style_report = {
+                "total_penalty": round(sum(penalties), 2),
+                "avg_penalty": round(sum(penalties) / len(penalties), 2),
+                "penalized_responses": penalized_count,
+                "total_responses": len(penalties),
+            }
 
         # Aggregate
         result.questions_asked = len(all_scores)
@@ -440,18 +472,27 @@ class Evaluator:
                 ask_question, q.reference_answer, answer
             )
 
-            weighted_score = int(judge_result.score * q.weight)
-            all_scores.append(judge_result.score)
+            # Style control: penalize verbose/over-formatted responses
+            style_adj = apply_style_adjustment(judge_result.score, answer)
+            adjusted_score = style_adj["adjusted_score"]
+
+            self.difficulty_tracker.record(q.id, passed=adjusted_score >= 70)
+
+            weighted_score = int(adjusted_score * q.weight)
+            all_scores.append(adjusted_score)
 
             if q.domain not in domain_buckets:
                 domain_buckets[q.domain] = []
-            domain_buckets[q.domain].append(judge_result.score)
+            domain_buckets[q.domain].append(adjusted_score)
 
             result.judge_responses.append({
                 "question_id": q.id,
                 "domain": q.domain,
                 "difficulty": q.difficulty,
-                "score": judge_result.score,
+                "score": adjusted_score,
+                "raw_score": judge_result.score,
+                "style_penalty": style_adj["style_penalty"],
+                "style_features": style_adj["style_features"],
                 "weighted_score": weighted_score,
                 "explanation": judge_result.explanation,
                 "method": judge_result.method,
@@ -462,6 +503,17 @@ class Evaluator:
             result.domain_scores[domain] = {
                 "score": int(sum(scores) / len(scores)),
                 "questions": len(scores),
+            }
+
+        # Aggregate style report
+        penalties = [jr.get("style_penalty", 0) for jr in result.judge_responses]
+        penalized_count = sum(1 for p in penalties if p > 0)
+        if penalties:
+            result.style_report = {
+                "total_penalty": round(sum(penalties), 2),
+                "avg_penalty": round(sum(penalties) / len(penalties), 2),
+                "penalized_responses": penalized_count,
+                "total_responses": len(penalties),
             }
 
         result.questions_asked = len(questions)
