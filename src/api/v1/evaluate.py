@@ -449,6 +449,8 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 scores["process_quality_report"] = eval_result.process_quality_report
             if eval_result.latency_stats:
                 scores["latency_stats"] = eval_result.latency_stats
+            if eval_result.style_report:
+                scores["style_report"] = eval_result.style_report
             if domain_result:
                 scores["domain_scores"] = domain_result.domain_scores
 
@@ -495,6 +497,12 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                     "judge_responses": domain_result.judge_responses,
                 } if domain_result else None,
             }
+
+        # Persist difficulty tracker stats (non-fatal)
+        try:
+            await evaluator.difficulty_tracker.save_to_db()
+        except Exception as e:
+            logger.warning(f"[{evaluation_id[:8]}] Difficulty tracker save failed (non-fatal): {e}")
 
         now = datetime.utcnow()
         eval_duration_ms = int((_time.time() - eval_start) * 1000)

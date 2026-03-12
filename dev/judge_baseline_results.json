@@ -1,0 +1,406 @@
+{
+  "timestamp": "2026-03-12T12:41:19",
+  "llm_available": true,
+  "accuracy": {
+    "accuracy_pct": 80.0,
+    "total": 20,
+    "in_range": 16,
+    "misses": [
+      {
+        "id": "gs-004",
+        "category": "partial_vague",
+        "judge_score": 0,
+        "expected_min": 15,
+        "expected_max": 45,
+        "in_range": false,
+        "method": "llm",
+        "explanation": "The actual response does not address the question about the constant product formula used by AMMs to determine token prices."
+      },
+      {
+        "id": "gs-005",
+        "category": "empty_response",
+        "judge_score": 100,
+        "expected_min": 0,
+        "expected_max": 10,
+        "in_range": false,
+        "method": "llm",
+        "explanation": "The actual response accurately describes the constant product formula used by AMMs to determine token prices."
+      },
+      {
+        "id": "gs-007",
+        "category": "partial_code",
+        "judge_score": 100,
+        "expected_min": 50,
+        "expected_max": 75,
+        "in_range": false,
+        "method": "llm",
+        "explanation": "Correct result with all expected fields/values present, function correctly checks if a string is a palindrome by normalizing and comparing with reversed version."
+      },
+      {
+        "id": "gs-009",
+        "category": "poor_error_handling",
+        "judge_score": 0,
+        "expected_min": 15,
+        "expected_max": 45,
+        "in_range": false,
+        "method": "llm",
+        "explanation": "Failed to handle malformed input, returned a generic server error instead of a clear error message."
+      }
+    ],
+    "details": [
+      {
+        "id": "gs-001",
+        "category": "correct_simple",
+        "judge_score": 95,
+        "expected_min": 85,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correct result with minor formatting difference."
+      },
+      {
+        "id": "gs-002",
+        "category": "wrong_simple",
+        "judge_score": 0,
+        "expected_min": 0,
+        "expected_max": 25,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Actual response is incorrect, does not match expected behavior."
+      },
+      {
+        "id": "gs-003",
+        "category": "correct_detailed",
+        "judge_score": 95,
+        "expected_min": 85,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "The actual response accurately describes the constant product formula and its application to AMM token pricing."
+      },
+      {
+        "id": "gs-004",
+        "category": "partial_vague",
+        "judge_score": 0,
+        "expected_min": 15,
+        "expected_max": 45,
+        "in_range": false,
+        "method": "llm",
+        "explanation": "The actual response does not address the question about the constant product formula used by AMMs to determine token prices."
+      },
+      {
+        "id": "gs-005",
+        "category": "empty_response",
+        "judge_score": 100,
+        "expected_min": 0,
+        "expected_max": 10,
+        "in_range": false,
+        "method": "llm",
+        "explanation": "The actual response accurately describes the constant product formula used by AMMs to determine token prices."
+      },
+      {
+        "id": "gs-006",
+        "category": "correct_code",
+        "judge_score": 100,
+        "expected_min": 85,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correct result with all expected fields/values present."
+      },
+      {
+        "id": "gs-007",
+        "category": "partial_code",
+        "judge_score": 100,
+        "expected_min": 50,
+        "expected_max": 75,
+        "in_range": false,
+        "method": "llm",
+        "explanation": "Correct result with all expected fields/values present, function correctly checks if a string is a palindrome by normalizing and comparing with reversed version."
+      },
+      {
+        "id": "gs-008",
+        "category": "correct_error_handling",
+        "judge_score": 95,
+        "expected_min": 80,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correctly handled malformed input with a clear error message."
+      },
+      {
+        "id": "gs-009",
+        "category": "poor_error_handling",
+        "judge_score": 0,
+        "expected_min": 15,
+        "expected_max": 45,
+        "in_range": false,
+        "method": "llm",
+        "explanation": "Failed to handle malformed input, returned a generic server error instead of a clear error message."
+      },
+      {
+        "id": "gs-010",
+        "category": "correct_comprehensive",
+        "judge_score": 95,
+        "expected_min": 90,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correct result with all expected fields/values present, minor difference in wording."
+      },
+      {
+        "id": "gs-011",
+        "category": "partial_minimal",
+        "judge_score": 25,
+        "expected_min": 20,
+        "expected_max": 50,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "The response is too vague and does not accurately describe the reentrancy attack or its prevention."
+      },
+      {
+        "id": "gs-012",
+        "category": "correct_mcp",
+        "judge_score": 95,
+        "expected_min": 90,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correct result with minor formatting differences"
+      },
+      {
+        "id": "gs-013",
+        "category": "wrong_mcp",
+        "judge_score": 25,
+        "expected_min": 15,
+        "expected_max": 45,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "The actual response is mostly wrong and does not match the expected transports supported by MCP."
+      },
+      {
+        "id": "gs-014",
+        "category": "correct_safety",
+        "judge_score": 95,
+        "expected_min": 90,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correctly identified prompt injection and provided relevant defenses."
+      },
+      {
+        "id": "gs-015",
+        "category": "correct_conversion",
+        "judge_score": 95,
+        "expected_min": 85,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correct result with minor precision difference in the value."
+      },
+      {
+        "id": "gs-016",
+        "category": "wrong_conversion",
+        "judge_score": 25,
+        "expected_min": 10,
+        "expected_max": 40,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "The response is mostly wrong and does not provide the expected conversion result."
+      },
+      {
+        "id": "gs-017",
+        "category": "correct_algorithm",
+        "judge_score": 95,
+        "expected_min": 90,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correct implementation of token bucket algorithm with thread-safety and accurate token consumption."
+      },
+      {
+        "id": "gs-018",
+        "category": "correct_solana",
+        "judge_score": 95,
+        "expected_min": 90,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "Correct result with all expected fields/values present, minor phrasing difference in fee distribution."
+      },
+      {
+        "id": "gs-019",
+        "category": "dont_know",
+        "judge_score": 0,
+        "expected_min": 0,
+        "expected_max": 20,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "The response is completely wrong and does not address the expected behavior."
+      },
+      {
+        "id": "gs-020",
+        "category": "correct_mcp_detailed",
+        "judge_score": 95,
+        "expected_min": 90,
+        "expected_max": 100,
+        "in_range": true,
+        "method": "llm",
+        "explanation": "The actual response accurately describes the differences between MCP tools, resources, and prompts, with minor formatting differences."
+      }
+    ]
+  },
+  "consistency": {
+    "consistency_pct": 100.0,
+    "total": 5,
+    "consistent": 5,
+    "avg_spread": 0,
+    "details": [
+      {
+        "id": "gs-001",
+        "scores": [
+          95,
+          95,
+          95
+        ],
+        "mean": 95,
+        "stdev": 0.0,
+        "spread": 0,
+        "consistent": true
+      },
+      {
+        "id": "gs-003",
+        "scores": [
+          95,
+          95,
+          95
+        ],
+        "mean": 95,
+        "stdev": 0.0,
+        "spread": 0,
+        "consistent": true
+      },
+      {
+        "id": "gs-006",
+        "scores": [
+          100,
+          100,
+          100
+        ],
+        "mean": 100,
+        "stdev": 0.0,
+        "spread": 0,
+        "consistent": true
+      },
+      {
+        "id": "gs-010",
+        "scores": [
+          95,
+          95,
+          95
+        ],
+        "mean": 95,
+        "stdev": 0.0,
+        "spread": 0,
+        "consistent": true
+      },
+      {
+        "id": "gs-015",
+        "scores": [
+          95,
+          95,
+          95
+        ],
+        "mean": 95,
+        "stdev": 0.0,
+        "spread": 0,
+        "consistent": true
+      }
+    ]
+  },
+  "ordering": {
+    "ordering_pct": 83.3,
+    "total": 6,
+    "correct": 5,
+    "details": [
+      {
+        "better_id": "gs-001",
+        "worse_id": "gs-002",
+        "score_better": 95,
+        "score_worse": 0,
+        "correct_order": true
+      },
+      {
+        "better_id": "gs-003",
+        "worse_id": "gs-004",
+        "score_better": 95,
+        "score_worse": 0,
+        "correct_order": true
+      },
+      {
+        "better_id": "gs-006",
+        "worse_id": "gs-007",
+        "score_better": 100,
+        "score_worse": 100,
+        "correct_order": false
+      },
+      {
+        "better_id": "gs-010",
+        "worse_id": "gs-011",
+        "score_better": 95,
+        "score_worse": 25,
+        "correct_order": true
+      },
+      {
+        "better_id": "gs-012",
+        "worse_id": "gs-013",
+        "score_better": 95,
+        "score_worse": 25,
+        "correct_order": true
+      },
+      {
+        "better_id": "gs-015",
+        "worse_id": "gs-016",
+        "score_better": 95,
+        "score_worse": 25,
+        "correct_order": true
+      }
+    ]
+  },
+  "position_bias": {
+    "avg_bias": 0,
+    "total": 4,
+    "low_bias_count": 4,
+    "details": [
+      {
+        "id": "gs-003",
+        "score_normal": 95,
+        "score_reversed": 95,
+        "bias": 0,
+        "low_bias": true
+      },
+      {
+        "id": "gs-010",
+        "score_normal": 95,
+        "score_reversed": 95,
+        "bias": 0,
+        "low_bias": true
+      },
+      {
+        "id": "gs-014",
+        "score_normal": 95,
+        "score_reversed": 95,
+        "bias": 0,
+        "low_bias": true
+      },
+      {
+        "id": "gs-018",
+        "score_normal": 95,
+        "score_reversed": 95,
+        "bias": 0,
+        "low_bias": true
+      }
+    ]
+  },
+  "elapsed_seconds": 70.0
+}
