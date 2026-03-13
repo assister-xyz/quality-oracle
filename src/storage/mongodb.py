@@ -39,6 +39,13 @@ async def connect_db():
     await _db.quality__ladder.create_index([("domain", 1), ("position", 1)], unique=True)
     await _db.quality__ladder.create_index("target_id")
     await _db.quality__question_stats.create_index("question_id", unique=True)
+    # Rankings collection
+    await _db.quality__rankings.create_index([("domain", 1), ("position", 1)], unique=True)
+    await _db.quality__rankings.create_index("target_id")
+    # IRT item parameters
+    await _db.quality__item_params.create_index("question_id", unique=True)
+    await _db.quality__item_params.create_index("status")
+    await _db.quality__item_params.create_index("domain")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -106,3 +113,11 @@ def ladder_col():
 
 def question_stats_col():
     return get_db().quality__question_stats
+
+
+def rankings_col():
+    return get_db().quality__rankings
+
+
+def item_params_col():
+    return get_db().quality__item_params

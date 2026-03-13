@@ -124,6 +124,8 @@ def test_client(mock_api_key_doc):
         patch("src.storage.mongodb.battles_col", return_value=mock_col),
         patch("src.storage.mongodb.ladder_col", return_value=mock_col),
         patch("src.storage.mongodb.question_stats_col", return_value=mock_col),
+        patch("src.storage.mongodb.rankings_col", return_value=mock_col),
+        patch("src.storage.mongodb.item_params_col", return_value=mock_col),
         # Also patch where imported (evaluate.py, scores.py, etc.)
         patch("src.api.v1.evaluate.evaluations_col", return_value=mock_col),
         patch("src.api.v1.evaluate.scores_col", return_value=mock_col),

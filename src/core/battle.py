@@ -515,8 +515,14 @@ class BattleEngine:
                 style_penalty_b=style_penalty_b,
             )
 
+            # Build question_responses from per-question judge scores
+            question_responses = self._build_question_responses(
+                questions, eval_a, eval_b,
+            )
+
             # Build update
             update = {
+                "question_responses": question_responses,
                 "agent_a.name": eval_a.get("name", ""),
                 "agent_a.scores": eval_a.get("scores", {}),
                 "agent_a.overall_score": eval_a["overall_score"],
@@ -605,6 +611,7 @@ class BattleEngine:
                     "name": manifest.get("name", target_url) if not blind else label,
                     "style_penalty": style_penalty,
                     "_real_name": manifest.get("name", target_url),
+                    "_judge_responses": result.judge_responses,
                 }
             except Exception as e:
                 logger.error(f"Evaluation failed for {target_url}: {e}")
@@ -614,6 +621,7 @@ class BattleEngine:
                     "name": label if blind else target_url,
                     "style_penalty": 0.0,
                     "_real_name": target_url,
+                    "_judge_responses": [],
                 }
 
         eval_a, eval_b = await asyncio.gather(
@@ -626,6 +634,41 @@ class BattleEngine:
         eval_b["name"] = eval_b.pop("_real_name", eval_b.get("name", ""))
 
         return eval_a, eval_b
+
+    @staticmethod
+    def _build_question_responses(
+        questions: List[ChallengeQuestion],
+        eval_a: dict,
+        eval_b: dict,
+    ) -> List[dict]:
+        """Map per-question judge scores to question_response entries.
+
+        Uses judge_responses from each evaluator result. Each judge_response
+        has a 'score' field. We pair them by index to each challenge question.
+        """
+        judge_a = eval_a.get("_judge_responses", [])
+        judge_b = eval_b.get("_judge_responses", [])
+
+        responses = []
+        for idx, q in enumerate(questions):
+            score_a = judge_a[idx]["score"] if idx < len(judge_a) else 0
+            score_b = judge_b[idx]["score"] if idx < len(judge_b) else 0
+            latency_a = judge_a[idx].get("latency_ms", 0) if idx < len(judge_a) else 0
+            latency_b = judge_b[idx].get("latency_ms", 0) if idx < len(judge_b) else 0
+
+            qr = BattleEngine.compute_question_response(
+                question_id=q.id,
+                question_hash=q.id,
+                domain=q.domain,
+                difficulty=q.difficulty,
+                score_a=score_a,
+                score_b=score_b,
+                latency_a_ms=latency_a,
+                latency_b_ms=latency_b,
+            )
+            responses.append(qr)
+
+        return responses
 
     async def _update_agent_ratings(
         self, target_id: str, deltas: dict, won: bool, draw: bool,

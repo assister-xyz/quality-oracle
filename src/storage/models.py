@@ -323,6 +323,79 @@ class MatchPrediction(BaseModel):
     recommendation: str = "unknown"  # good_match, one_sided, too_unbalanced
 
 
+# ── Divisions & Rankings ─────────────────────────────────────────────────────
+
+class Division(str, Enum):
+    CHALLENGER = "challenger"
+    DIAMOND = "diamond"
+    PLATINUM = "platinum"
+    GOLD = "gold"
+    SILVER = "silver"
+    BRONZE = "bronze"
+    UNRANKED = "unranked"
+
+
+DIVISION_CONFIG = {
+    Division.CHALLENGER: {"label": "Challenger", "color": "#FF4500", "icon": "crown", "min_mu": 40.0},
+    Division.DIAMOND: {"label": "Diamond", "color": "#B9F2FF", "icon": "gem", "min_mu": 35.0},
+    Division.PLATINUM: {"label": "Platinum", "color": "#E5E4E2", "icon": "shield", "min_mu": 30.0},
+    Division.GOLD: {"label": "Gold", "color": "#FFD700", "icon": "medal", "min_mu": 27.0},
+    Division.SILVER: {"label": "Silver", "color": "#C0C0C0", "icon": "star", "min_mu": 24.0},
+    Division.BRONZE: {"label": "Bronze", "color": "#CD7F32", "icon": "circle", "min_mu": 20.0},
+    Division.UNRANKED: {"label": "Unranked", "color": "#808080", "icon": "minus", "min_mu": 0.0},
+}
+
+
+def compute_division(mu: float, sigma: float, battles: int, is_top3: bool = False) -> str:
+    """Compute division from rating stats. Top-3 override to Challenger."""
+    if battles < 3:
+        return Division.UNRANKED
+    if is_top3 and mu >= DIVISION_CONFIG[Division.DIAMOND]["min_mu"]:
+        return Division.CHALLENGER
+    # High uncertainty keeps you lower
+    effective = mu - sigma * 0.5
+    for div in [Division.DIAMOND, Division.PLATINUM, Division.GOLD, Division.SILVER, Division.BRONZE]:
+        if effective >= DIVISION_CONFIG[div]["min_mu"]:
+            return div
+    return Division.UNRANKED
+
+
+class RankingEntry(BaseModel):
+    target_id: str
+    name: str = ""
+    bt_rating: float = 0.0
+    ci_lower: float = 0.0
+    ci_upper: float = 0.0
+    division: str = Division.UNRANKED
+    division_config: Dict[str, Any] = {}
+    battle_record: Dict[str, int] = Field(default_factory=lambda: {"wins": 0, "losses": 0, "draws": 0})
+    openskill_mu: float = 25.0
+    position: int = 0
+    domain: Optional[str] = None
+
+
+class AgentProfile(BaseModel):
+    target_id: str
+    name: str = ""
+    bt_rating: float = 0.0
+    ci_lower: float = 0.0
+    ci_upper: float = 0.0
+    division: str = Division.UNRANKED
+    division_config: Dict[str, Any] = {}
+    openskill_mu: float = 25.0
+    openskill_sigma: float = 8.333
+    battle_record: Dict[str, int] = Field(default_factory=lambda: {"wins": 0, "losses": 0, "draws": 0})
+    total_battles: int = 0
+    win_rate: float = 0.0
+    current_streak: int = 0  # positive = win streak, negative = loss streak
+    best_streak: int = 0
+    per_axis_scores: Dict[str, float] = {}
+    rating_history: List[Dict[str, Any]] = []
+    recent_battles: List[Dict[str, Any]] = []
+    position: int = 0
+    domain: Optional[str] = None
+
+
 class LadderEntry(BaseModel):
     target_id: str
     domain: Optional[str] = None
