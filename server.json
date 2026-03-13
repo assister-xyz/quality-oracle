@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.vitaliiserbynassisterr/agenttrust",
+  "description": "Challenge-response quality verification for AI agents and MCP servers. Evaluates competency across 6 dimensions (accuracy, safety, reliability, process quality, latency, schema quality), runs adversarial probes, and issues W3C Verifiable Credentials.",
+  "title": "AgentTrust",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/vitaliiserbynassisterr/quality-oracle",
+  "repository": {
+    "url": "https://github.com/vitaliiserbynassisterr/quality-oracle",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "mcp-agenttrust",
+      "version": "0.1.0",
+      "transport": {
+        "type": "sse"
+      },
+      "environmentVariables": [
+        {
+          "name": "GROQ_API_KEY",
+          "description": "Groq API key for LLM judge (free tier available at console.groq.com)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "CEREBRAS_API_KEY",
+          "description": "Cerebras API key for LLM judge (free tier available at cloud.cerebras.ai)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "MONGODB_URL",
+          "description": "MongoDB connection URL for persistent storage",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

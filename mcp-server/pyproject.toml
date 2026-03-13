@@ -12,10 +12,22 @@ license = {text = "MIT"}
 authors = [
     {name = "Assisterr", email = "team@assisterr.ai"},
 ]
+keywords = ["mcp", "ai-agents", "quality", "evaluation", "verification", "trust"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "mcp>=1.3.0",
     "httpx>=0.28.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/vitaliiserbynassisterr/quality-oracle"
+Repository = "https://github.com/vitaliiserbynassisterr/quality-oracle"
+Documentation = "https://github.com/vitaliiserbynassisterr/quality-oracle/blob/main/docs/ARCHITECTURE.md"
 
 [project.scripts]
 mcp-agenttrust = "server:main"
