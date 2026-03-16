@@ -78,6 +78,6 @@ AgentTrust is the only tool that verifies **functional competency** before trust
 
 ## Links
 
-- GitHub: https://github.com/vitaliiserbynassisterr/quality-oracle
+- GitHub: https://github.com/assister-xyz/quality-oracle
 - MCP Server: `pip install mcp-agenttrust`
 - Architecture: [docs/ARCHITECTURE.md](../ARCHITECTURE.md)

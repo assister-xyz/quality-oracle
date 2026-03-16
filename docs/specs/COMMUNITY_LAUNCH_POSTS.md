@@ -22,7 +22,7 @@ docker compose up -d  (API + MCP Server + MongoDB + Redis)
 
 552 tests | MIT license | Python/FastAPI
 
-GitHub: https://github.com/vitaliiserbynassisterr/quality-oracle
+GitHub: https://github.com/assister-xyz/quality-oracle
 PyPI: https://pypi.org/project/mcp-agenttrust/
 ```
 
@@ -96,14 +96,14 @@ pip install mcp-agenttrust
 
 Or the full stack:
 ```bash
-git clone https://github.com/vitaliiserbynassisterr/quality-oracle
+git clone https://github.com/assister-xyz/quality-oracle
 cd quality-oracle && cp .env.example .env
 docker compose up -d
 ```
 
 552 tests, MIT license, free LLM providers (Cerebras, Groq, OpenRouter).
 
-[GitHub](https://github.com/vitaliiserbynassisterr/quality-oracle) | [PyPI](https://pypi.org/project/mcp-agenttrust/)
+[GitHub](https://github.com/assister-xyz/quality-oracle) | [PyPI](https://pypi.org/project/mcp-agenttrust/)
 ```
 
 ---
@@ -160,7 +160,7 @@ pip install mcp-agenttrust
 
 Full stack: docker compose up -d
 
-GitHub: https://github.com/vitaliiserbynassisterr/quality-oracle
+GitHub: https://github.com/assister-xyz/quality-oracle
 PyPI: https://pypi.org/project/mcp-agenttrust/
 
 Built by @assaborovna
@@ -198,7 +198,7 @@ Cost: $0.006-0.013 per evaluation
 
 pip install mcp-agenttrust
 
-GitHub: https://github.com/vitaliiserbynassisterr/quality-oracle
+GitHub: https://github.com/assister-xyz/quality-oracle
 ```
 
 ---
@@ -220,7 +220,7 @@ Key technical contributions:
 
 The system connects to MCP servers, runs functional tests, and issues W3C Verifiable Credentials.
 
-552 tests, MIT: https://github.com/vitaliiserbynassisterr/quality-oracle
+552 tests, MIT: https://github.com/assister-xyz/quality-oracle
 ```
 
 ### r/LocalLLaMA
@@ -240,7 +240,7 @@ pip install mcp-agenttrust
 
 The LLM judge auto-rotates keys on rate limits and falls back through 7 providers.
 
-GitHub: https://github.com/vitaliiserbynassisterr/quality-oracle
+GitHub: https://github.com/assister-xyz/quality-oracle
 ```
 
 ### r/LangChain
@@ -256,7 +256,7 @@ Features: 3-level evaluation, 6-axis scoring, W3C Verifiable Credentials, battle
 
 pip install mcp-agenttrust
 
-GitHub: https://github.com/vitaliiserbynassisterr/quality-oracle
+GitHub: https://github.com/assister-xyz/quality-oracle
 
 Would love feedback from the LangChain community on what evaluation dimensions matter most for your agents.
 ```

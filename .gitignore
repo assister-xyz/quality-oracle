@@ -51,3 +51,6 @@ reports/
 # Logs
 *.log
 logs/
+
+# MCP Registry tokens
+.mcpregistry_*

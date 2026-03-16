@@ -1,6 +1,6 @@
 # mcp-agenttrust
 
-<!-- mcp-name: io.github.vitaliiserbynassisterr/agenttrust -->
+<!-- mcp-name: io.github.assister-xyz/agenttrust -->
 
 MCP server for AI agent and MCP server quality verification.
 
@@ -50,7 +50,7 @@ mcp-agenttrust
 
 ## Requirements
 
-Requires a running [AgentTrust](https://github.com/vitaliiserbynassisterr/quality-oracle) API instance (the MCP server proxies requests to it).
+Requires a running [AgentTrust](https://github.com/assister-xyz/quality-oracle) API instance (the MCP server proxies requests to it).
 
 ## License
 

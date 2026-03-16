@@ -32,7 +32,7 @@ npm install -g @smithery/cli
 
 **Publish:**
 ```bash
-smithery mcp publish "https://github.com/vitaliiserbynassisterr/quality-oracle" \
+smithery mcp publish "https://github.com/assister-xyz/quality-oracle" \
   -n assisterr/agenttrust
 ```
 
@@ -46,7 +46,7 @@ smithery mcp publish "https://github.com/vitaliiserbynassisterr/quality-oracle" 
 
 **Fields:**
 - Name: AgentTrust
-- URL: https://github.com/vitaliiserbynassisterr/quality-oracle
+- URL: https://github.com/assister-xyz/quality-oracle
 - Description: Challenge-response quality verification for AI agents and MCP servers. 6-axis scoring, battle arena, IRT adaptive testing, W3C verifiable credentials.
 - Category: Testing & Evaluation
 - Transport: SSE
@@ -125,4 +125,4 @@ AgentTrust evaluates AI agent and MCP server competency BEFORE you trust them. C
 
 **Install:** `pip install mcp-agenttrust`
 
-**GitHub:** https://github.com/vitaliiserbynassisterr/quality-oracle
+**GitHub:** https://github.com/assister-xyz/quality-oracle

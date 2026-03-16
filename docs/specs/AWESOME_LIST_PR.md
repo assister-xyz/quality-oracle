@@ -8,7 +8,7 @@
 
 **Entry:**
 ```markdown
-- [AgentTrust](https://github.com/vitaliiserbynassisterr/quality-oracle) - Challenge-response quality verification for MCP servers. 6-axis scoring (accuracy, safety, reliability), battle arena with ELO ratings, IRT adaptive testing, W3C verifiable credentials. `pip install mcp-agenttrust`
+- [AgentTrust](https://github.com/assister-xyz/quality-oracle) - Challenge-response quality verification for MCP servers. 6-axis scoring (accuracy, safety, reliability), battle arena with ELO ratings, IRT adaptive testing, W3C verifiable credentials. `pip install mcp-agenttrust`
 ```
 
 **PR Title:** `Add AgentTrust - MCP server quality verification`
@@ -33,7 +33,7 @@ Features:
 
 **Entry:**
 ```markdown
-- [AgentTrust](https://github.com/vitaliiserbynassisterr/quality-oracle) - Quality verification service for MCP servers. Automated challenge-response testing with LLM judge consensus, adversarial probes, and IRT adaptive question calibration.
+- [AgentTrust](https://github.com/assister-xyz/quality-oracle) - Quality verification service for MCP servers. Automated challenge-response testing with LLM judge consensus, adversarial probes, and IRT adaptive question calibration.
 ```
 
 ### 3. e2b-dev/awesome-ai-agents (26.4K stars)
@@ -42,21 +42,21 @@ Features:
 
 **Entry:**
 ```markdown
-| [AgentTrust](https://github.com/vitaliiserbynassisterr/quality-oracle) | Challenge-response quality verification for AI agents and MCP servers. 6-axis scoring, battle arena, adaptive testing, W3C verifiable credentials. | ![GitHub stars](https://img.shields.io/github/stars/vitaliiserbynassisterr/quality-oracle) |
+| [AgentTrust](https://github.com/assister-xyz/quality-oracle) | Challenge-response quality verification for AI agents and MCP servers. 6-axis scoring, battle arena, adaptive testing, W3C verifiable credentials. | ![GitHub stars](https://img.shields.io/github/stars/assister-xyz/quality-oracle) |
 ```
 
 ### 4. appcypher/awesome-mcp-servers (5.2K stars)
 
 **Entry:**
 ```markdown
-- [AgentTrust](https://github.com/vitaliiserbynassisterr/quality-oracle) <img alt="Python" src="https://img.shields.io/badge/Python-blue"> - MCP server quality verification with challenge-response testing, LLM judge consensus, and W3C verifiable credentials.
+- [AgentTrust](https://github.com/assister-xyz/quality-oracle) <img alt="Python" src="https://img.shields.io/badge/Python-blue"> - MCP server quality verification with challenge-response testing, LLM judge consensus, and W3C verifiable credentials.
 ```
 
 ### 5. kyrolabs/awesome-agents (1.5K stars)
 
 **Entry:**
 ```markdown
-- [AgentTrust](https://github.com/vitaliiserbynassisterr/quality-oracle) - Pre-payment quality gate for AI agents. Evaluates competency via challenge-response testing before delegation. ![Stars](https://img.shields.io/github/stars/vitaliiserbynassisterr/quality-oracle)
+- [AgentTrust](https://github.com/assister-xyz/quality-oracle) - Pre-payment quality gate for AI agents. Evaluates competency via challenge-response testing before delegation. ![Stars](https://img.shields.io/github/stars/assister-xyz/quality-oracle)
 ```
 
 ## Prerequisites Before Submitting PRs

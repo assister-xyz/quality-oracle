@@ -25,9 +25,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/vitaliiserbynassisterr/quality-oracle"
-Repository = "https://github.com/vitaliiserbynassisterr/quality-oracle"
-Documentation = "https://github.com/vitaliiserbynassisterr/quality-oracle/blob/main/docs/ARCHITECTURE.md"
+Homepage = "https://github.com/assister-xyz/quality-oracle"
+Repository = "https://github.com/assister-xyz/quality-oracle"
+Documentation = "https://github.com/assister-xyz/quality-oracle/blob/main/docs/ARCHITECTURE.md"
 
 [project.scripts]
 mcp-agenttrust = "server:main"

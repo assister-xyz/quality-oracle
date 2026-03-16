@@ -12,7 +12,7 @@ Hi Mat,
 
 I've been following mcp-evals and love what you're building for tool-level evaluation.
 
-I built AgentTrust (https://github.com/vitaliiserbynassisterr/quality-oracle) — it does
+I built AgentTrust (https://github.com/assister-xyz/quality-oracle) — it does
 agent-level competency verification via challenge-response testing. 6-axis scoring,
 consensus judging, battle arena, IRT adaptive testing.
 
@@ -49,7 +49,7 @@ Combined, our tools create a complete trust profile:
 We could cross-reference scores, or build a joint "full trust profile" badge.
 Would love to discuss.
 
-Project: https://github.com/vitaliiserbynassisterr/quality-oracle
+Project: https://github.com/assister-xyz/quality-oracle
 ```
 
 ---
@@ -73,7 +73,7 @@ Verifiable Credentials. Could integrate as a simple API call from your indexer.
 
 Open to any form of collaboration. MIT license.
 
-https://github.com/vitaliiserbynassisterr/quality-oracle
+https://github.com/assister-xyz/quality-oracle
 ```
 
 ---
@@ -98,7 +98,7 @@ Our approaches are complementary:
 
 Could explore a joint certification badge — "MCP Ready + Quality Verified."
 
-https://github.com/vitaliiserbynassisterr/quality-oracle
+https://github.com/assister-xyz/quality-oracle
 ```
 
 ---
@@ -121,7 +121,7 @@ popularity, docs).
 Our scores come from actual testing — LLM judge consensus on tool responses,
 adversarial probes, and IRT-calibrated question banks.
 
-https://github.com/vitaliiserbynassisterr/quality-oracle
+https://github.com/assister-xyz/quality-oracle
 ```
 
 ---

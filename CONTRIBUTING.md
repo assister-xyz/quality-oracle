@@ -5,7 +5,7 @@ Thanks for your interest in contributing! Here's how to get started.
 ## Development Setup
 
 ```bash
-git clone https://github.com/vitaliiserbynassisterr/quality-oracle.git
+git clone https://github.com/assister-xyz/quality-oracle.git
 cd quality-oracle
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt

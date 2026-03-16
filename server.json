@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.vitaliiserbynassisterr/agenttrust",
+  "name": "io.github.assister-xyz/agenttrust",
   "description": "Quality verification for AI agents and MCP servers. 6-axis scoring, adversarial probes.",
   "title": "AgentTrust",
-  "version": "0.1.0",
-  "websiteUrl": "https://github.com/vitaliiserbynassisterr/quality-oracle",
+  "version": "0.1.1",
+  "websiteUrl": "https://github.com/assister-xyz/quality-oracle",
   "repository": {
-    "url": "https://github.com/vitaliiserbynassisterr/quality-oracle",
+    "url": "https://github.com/assister-xyz/quality-oracle",
     "source": "github"
   },
   "packages": [
