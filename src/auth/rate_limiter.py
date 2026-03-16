@@ -1,5 +1,5 @@
 """Rate limiting middleware for API keys — per architecture Section 2.5.1."""
-from fastapi import Request, Response
+from fastapi import Response
 
 from src.storage.cache import check_rate_limit
 

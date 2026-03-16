@@ -11,7 +11,6 @@ Cost optimizations (Trust or Escalate pattern, ICLR 2025):
 
 Fallback: if fewer than min_judges respond, use best available result.
 """
-import asyncio
 import logging
 import statistics
 from dataclasses import dataclass
@@ -185,7 +184,7 @@ class ConsensusJudge:
         m = self.metrics
         if m.total_judged == 0:
             return
-        saved = m.fuzzy_routed + m.cache_hits
+        m.fuzzy_routed + m.cache_hits
         max_calls = m.total_judged * self._max_judges  # worst case: all judges for all items
         actual_calls = m.llm_calls
         pct_saved = f"{(1 - actual_calls / max_calls) * 100:.0f}%" if max_calls else "0%"

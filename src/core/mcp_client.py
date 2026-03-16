@@ -315,7 +315,7 @@ async def check_response_consistency(
                     consistency[name] = 0.0
                 else:
                     # Partial match — compute character-level similarity
-                    shorter = min(len(c1), len(c2))
+                    min(len(c1), len(c2))
                     longer = max(len(c1), len(c2))
                     if longer == 0:
                         consistency[name] = 1.0
@@ -340,7 +340,7 @@ async def check_response_consistency(
 
 async def evaluate_server_streaming(
     server_url: str,
-    cancel: Optional["CancellationToken"] = None,
+    cancel: Optional[object] = None,
     test_types: Optional[set] = None,
     max_tools: Optional[int] = None,
 ) -> AsyncGenerator[Tuple[str, dict, dict], None]:

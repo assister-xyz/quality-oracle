@@ -8,7 +8,7 @@ BradleyTerryRanker provides batch-computed stable rankings (LMArena-proven).
 import logging
 import math
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from openskill.models import PlackettLuce
 
@@ -177,7 +177,7 @@ class BradleyTerryRanker:
 
         for b in battles:
             w = b.get("winner_id")
-            l = b.get("loser_id")
+            loser = b.get("loser_id")
             draw = b.get("draw", False)
 
             if draw:
@@ -189,11 +189,11 @@ class BradleyTerryRanker:
                 wins.setdefault(a2, {})
                 wins[a1][a2] = wins[a1].get(a2, 0.0) + 0.5
                 wins[a2][a1] = wins[a2].get(a1, 0.0) + 0.5
-            elif w and l:
-                agents.update([w, l])
+            elif w and loser:
+                agents.update([w, loser])
                 wins.setdefault(w, {})
-                wins.setdefault(l, {})
-                wins[w][l] = wins[w].get(l, 0.0) + 1.0
+                wins.setdefault(loser, {})
+                wins[w][loser] = wins[w].get(loser, 0.0) + 1.0
 
         if len(agents) < 2:
             return {a: self.BASE_RATING for a in agents}

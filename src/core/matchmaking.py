@@ -6,7 +6,6 @@ Auto-selects pairing strategy based on population size:
   30+:         Batch wave with Lichess-style cost function
 """
 import logging
-import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 

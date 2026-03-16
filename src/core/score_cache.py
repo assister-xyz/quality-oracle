@@ -14,7 +14,7 @@ When effective score drops below confidence threshold, triggers re-evaluation.
 import logging
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -187,7 +187,7 @@ class ScoreCache:
 
     def stats(self) -> dict:
         """Cache statistics."""
-        now = time.time()
+        time.time()
         entries = list(self._cache.values())
         fresh = sum(1 for e in entries if e.freshness == "fresh")
         recent = sum(1 for e in entries if e.freshness == "recent")

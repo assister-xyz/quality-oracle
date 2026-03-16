@@ -8,7 +8,7 @@ import hashlib
 import logging
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 logger = logging.getLogger(__name__)
 

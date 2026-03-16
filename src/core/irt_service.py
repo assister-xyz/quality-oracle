@@ -7,7 +7,7 @@ maximization. Pure Python Rasch 1PL — no numpy/scipy required.
 import logging
 import math
 import random
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -283,9 +283,10 @@ class IRTService:
             # Try 2PL via girth if 200+ battles
             if battle_count >= 200:
                 try:
-                    import girth
-                    # TODO: 2PL calibration with girth when ready
-                    raise ImportError("girth 2PL not yet implemented")
+                    import importlib.util
+                    if importlib.util.find_spec("girth") is not None:
+                        # TODO: 2PL calibration with girth when ready
+                        pass
                 except ImportError:
                     pass
 
@@ -463,6 +464,7 @@ class IRTService:
         theta: float,
         administered: Optional[List[str]] = None,
         count: int = 5,
+        domains: Optional[List[str]] = None,
     ) -> List[dict]:
         """Select questions via Fisher info maximization with exposure control.
 
@@ -471,9 +473,12 @@ class IRTService:
         """
         administered = set(administered or [])
 
-        # Load all active item params
+        # Load all active item params, optionally filtered by domain
         col = item_params_col()
-        cursor = col.find({"status": "active"})
+        query: dict = {"status": "active"}
+        if domains:
+            query["domain"] = {"$in": domains}
+        cursor = col.find(query)
         candidates = []
         async for doc in cursor:
             q_id = doc.get("question_id", "")

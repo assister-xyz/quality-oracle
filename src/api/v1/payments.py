@@ -4,9 +4,8 @@ GET  /v1/pricing — Get evaluation pricing table
 GET  /v1/pricing/{level} — Get price quote for specific level
 """
 import logging
-from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
 from src.auth.dependencies import get_api_key
 from src.payments.pricing import get_price_quote, get_pricing_table

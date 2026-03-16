@@ -111,6 +111,9 @@ class EvaluationStatus(BaseModel):
     duration_ms: Optional[int] = None  # wall-clock eval time
     gaming_risk: Optional[str] = None  # none/low/medium/high
     timing_anomaly: Optional[bool] = None
+    irt_theta: Optional[float] = None
+    irt_se: Optional[float] = None
+    confidence_interval: Optional[Dict[str, float]] = None
 
 
 # Webhook payload model

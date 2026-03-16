@@ -76,8 +76,7 @@ def _render_badge(score: int, tier: str, eval_mode: str | None = None) -> str:
     shield_svg = f'<g transform="translate(6, {(HEIGHT - ICON_SIZE) / 2}) scale(1)">{shield}</g>'
 
     # Score circle indicator (small dot)
-    score_dot_x = left_w + 10
-    score_dot_color = right_color
+    left_w + 10
 
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{HEIGHT}" role="img" aria-label="AgentTrust: {score}/100 {tier}">
   <title>AgentTrust {eval_mode or "quality"}: {score}/100 {tier}</title>

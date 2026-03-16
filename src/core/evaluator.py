@@ -10,19 +10,16 @@ import hashlib
 import logging
 import statistics
 import time
-from datetime import datetime
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
-from src.core.llm_judge import LLMJudge, JudgeResult
 from src.core.paraphraser import QuestionParaphraser
 from src.core.difficulty_calibration import DifficultyTracker
 from src.core.scoring import apply_style_adjustment
 from src.core.question_pools import (
     QuestionSelector,
-    ChallengeQuestion,
+    ALL_QUESTIONS,
     determine_tier,
 )
-from src.storage.models import EvalLevel
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +73,11 @@ class EvaluationResult:
         # Anti-gaming signals
         self.gaming_risk: Optional[dict] = None
 
+        # IRT ability estimation
+        self.irt_theta: Optional[float] = None
+        self.irt_se: Optional[float] = None
+        self.confidence_interval: Optional[Dict[str, float]] = None
+
     def to_dict(self) -> dict:
         d = {
             "overall_score": self.overall_score,
@@ -101,6 +103,12 @@ class EvaluationResult:
             d["style_report"] = self.style_report
         if self.gaming_risk:
             d["gaming_risk"] = self.gaming_risk
+        if self.irt_theta is not None:
+            d["irt_theta"] = self.irt_theta
+        if self.irt_se is not None:
+            d["irt_se"] = self.irt_se
+        if self.confidence_interval is not None:
+            d["confidence_interval"] = self.confidence_interval
         return d
 
 
@@ -112,13 +120,14 @@ class Evaluator:
     Accepts LLMJudge or ConsensusJudge (both implement ajudge()).
     """
 
-    def __init__(self, llm_judge, paraphrase: bool = True, eval_mode: str = "verified"):
+    def __init__(self, llm_judge, paraphrase: bool = True, eval_mode: str = "verified", irt_service=None):
         """Init with any judge that has an ajudge(question, expected, answer) method."""
         self.llm_judge = llm_judge
         self.question_selector = QuestionSelector()
         self.eval_mode = eval_mode
         self.paraphraser = QuestionParaphraser(llm_judge, eval_mode=eval_mode) if paraphrase else None
         self.difficulty_tracker = DifficultyTracker()
+        self.irt_service = irt_service
 
     def validate_manifest(self, manifest: dict) -> ManifestValidationResult:
         """Level 1: Validate MCP server manifest for completeness and quality."""
@@ -317,7 +326,7 @@ class Evaluator:
         target_id: str,
         response_stream: AsyncGenerator[Tuple[str, dict, dict], None],
         manifest: Optional[dict] = None,
-        cancel: Optional["CancellationToken"] = None,
+        cancel: Optional[object] = None,
         on_progress: Optional[Callable] = None,
     ) -> EvaluationResult:
         """Level 2 streaming: judge each response as it arrives.
@@ -329,7 +338,6 @@ class Evaluator:
             cancel: CancellationToken for early termination
             on_progress: Optional callback(tool_name, case_idx, score, running_avg)
         """
-        from src.core.cancellation import CancellationToken
 
         start = time.time()
         result = EvaluationResult()
@@ -446,9 +454,28 @@ class Evaluator:
         start = time.time()
         result = EvaluationResult()
 
-        questions = self.question_selector.select_questions(
-            target_id, domains=domains, count=question_count
-        )
+        # Try IRT adaptive selection first, fall back to random
+        irt_questions = None
+        if self.irt_service:
+            try:
+                irt_questions = await self.irt_service.select_adaptive_questions(
+                    theta=0.0, count=question_count, domains=domains,
+                )
+            except Exception:
+                irt_questions = None
+
+        if irt_questions:
+            irt_id_set = {q["question_id"] for q in irt_questions}
+            questions = [q for q in ALL_QUESTIONS if q.id in irt_id_set and (not domains or q.domain in domains)]
+            # Fill remaining with random if IRT returned fewer
+            if len(questions) < question_count:
+                extra = self.question_selector.select_questions(target_id, domains, question_count - len(questions))
+                seen = {q.id for q in questions}
+                questions.extend(q for q in extra if q.id not in seen)
+        else:
+            questions = self.question_selector.select_questions(
+                target_id, domains=domains, count=question_count
+            )
 
         all_scores = []
         domain_buckets: Dict[str, List[int]] = {}
@@ -522,6 +549,30 @@ class Evaluator:
         result.tier = determine_tier(result.overall_score)
         result.confidence = min(0.95, len(all_scores) / 30)
         result.duration_ms = int((time.time() - start) * 1000)
+
+        # Post-eval IRT ability estimation
+        if self.irt_service and questions:
+            try:
+                irt_responses = []
+                for qi, q in enumerate(questions):
+                    if qi < len(result.judge_responses):
+                        irt_responses.append({
+                            "question_id": q.id,
+                            "correct": result.judge_responses[qi].get("score", 0) >= 70,
+                        })
+                if irt_responses:
+                    ability = await self.irt_service.estimate_ability(irt_responses)
+                    if ability["responses_used"] > 0:
+                        result.irt_theta = ability["theta"]
+                        result.irt_se = ability["se"]
+                        se_score = ability["se"] * 10  # 1 logit ~ 10 score points
+                        result.confidence_interval = {
+                            "lower": max(0, round(result.overall_score - 1.96 * se_score, 1)),
+                            "upper": min(100, round(result.overall_score + 1.96 * se_score, 1)),
+                        }
+                        result.confidence = round(max(0.1, min(0.95, 1.0 - ability["se"] / 3.0)), 2)
+            except Exception:
+                pass  # non-fatal, keep random-based confidence
 
         hash_data = f"{target_id}:{result.overall_score}:{result.questions_asked}:{int(time.time())}"
         result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()

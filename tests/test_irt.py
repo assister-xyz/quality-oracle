@@ -347,6 +347,39 @@ class TestAdaptiveSelection:
             selected = await irt.select_adaptive_questions(theta=0.0, count=5)
         assert selected == []
 
+    async def test_domains_filter(self, irt):
+        """When domains are provided, MongoDB query includes $in filter."""
+        items = [
+            {"question_id": "q_defi", "domain": "defi", "difficulty_b": 0.0,
+             "discrimination_a": 1.0, "status": "active"},
+        ]
+
+        class MockCursor:
+            def __init__(self, data):
+                self._data = iter(data)
+            def __aiter__(self):
+                return self
+            async def __anext__(self):
+                try:
+                    return next(self._data)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        mock_col = MagicMock()
+        mock_col.find = MagicMock(return_value=MockCursor(items))
+
+        with patch("src.core.irt_service.item_params_col", return_value=mock_col):
+            selected = await irt.select_adaptive_questions(
+                theta=0.0, count=5, domains=["defi", "security"],
+            )
+
+        # Verify MongoDB query included domain filter
+        call_args = mock_col.find.call_args[0][0]
+        assert call_args["status"] == "active"
+        assert call_args["domain"] == {"$in": ["defi", "security"]}
+        assert len(selected) == 1
+        assert selected[0]["domain"] == "defi"
+
 
 # ── ItemParams Persistence ──────────────────────────────────────────────────
 

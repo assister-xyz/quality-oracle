@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def _score_error_response(content: str, is_error: bool) -> int:
     if not content or not content.strip():
         return 10  # Empty response to error input = bad
 
-    content_lower = content.lower()
+    content.lower()
 
     # Check for bad patterns (internal details leaked)
     bad_count = sum(1 for p in _BAD_ERROR_PATTERNS if p.search(content))

@@ -14,13 +14,13 @@ from src.storage.models import (
     EvaluationStatus,
     EvalStatus,
     EvalLevel,
-    EvalMode,
     WebhookPayload,
     normalize_eval_mode,
 )
 from src.storage.mongodb import evaluations_col, scores_col, score_history_col
 from src.core.evaluator import Evaluator
 from src.core.eval_mode import EVAL_MODES
+from src.core.irt_service import IRTService
 from src.core.llm_judge import LLMJudge
 from src.core.attestation import create_attestation
 from src.core.scoring import aggregate_scores
@@ -243,12 +243,18 @@ async def get_evaluation_status(
     # Extract gaming signals from scores
     gaming_risk = None
     timing_anomaly = None
+    irt_theta = None
+    irt_se = None
+    confidence_interval = None
     scores_data = doc.get("scores")
     if scores_data and isinstance(scores_data, dict):
         gr = scores_data.get("gaming_risk")
         if gr and isinstance(gr, dict):
             gaming_risk = gr.get("level")
             timing_anomaly = gr.get("timing_anomaly")
+        irt_theta = scores_data.get("irt_theta")
+        irt_se = scores_data.get("irt_se")
+        confidence_interval = scores_data.get("confidence_interval")
 
     return EvaluationStatus(
         evaluation_id=evaluation_id,
@@ -267,6 +273,9 @@ async def get_evaluation_status(
         duration_ms=duration_ms,
         gaming_risk=gaming_risk,
         timing_anomaly=timing_anomaly,
+        irt_theta=irt_theta,
+        irt_se=irt_se,
+        confidence_interval=confidence_interval,
     )
 
 
@@ -292,7 +301,8 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             judge = _get_judge()
         # Reset any exhausted API keys from prior evaluations
         judge.reset_keys()
-        evaluator = Evaluator(judge, eval_mode=request.eval_mode.value)
+        irt_service = IRTService()
+        evaluator = Evaluator(judge, eval_mode=request.eval_mode.value, irt_service=irt_service)
 
         # Step 1: Fetch real manifest from MCP server
         logger.info(f"[{evaluation_id[:8]}] Step 1: Fetching manifest from {request.target_url}")
@@ -453,6 +463,12 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 scores["style_report"] = eval_result.style_report
             if domain_result:
                 scores["domain_scores"] = domain_result.domain_scores
+                if domain_result.irt_theta is not None:
+                    scores["irt_theta"] = domain_result.irt_theta
+                if domain_result.irt_se is not None:
+                    scores["irt_se"] = domain_result.irt_se
+                if domain_result.confidence_interval is not None:
+                    scores["confidence_interval"] = domain_result.confidence_interval
 
             # Build comprehensive report with tool details
             # Compute per-tool latency from tool_responses
