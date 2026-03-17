@@ -16,7 +16,7 @@ jobs:
     env:
       IMAGE_NAME: ${{ vars.IMAGE_NAME }}
       ECR_REPO: ${{ vars.ECR_REPO }}
-      AWS_ECS_SERVICE_NAME: "launchpad-backend"
+      AWS_ECS_SERVICE_NAME: "quality-oracle"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,6 +34,9 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
         with:
           registry-type: private
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build and push image
         uses: docker/build-push-action@v6
