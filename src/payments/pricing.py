@@ -127,6 +127,12 @@ def get_price_quote(
     discount = TIER_DISCOUNTS.get(tier, 0.0)
     final_price = round(base_price * (1 - discount), 4)
 
+    # If no receiver wallet is configured, all evaluations are free
+    # (development/demo mode — no payment infrastructure yet)
+    receiver_addr = receiver or DEFAULT_RECEIVER
+    if receiver_addr == "NOT_CONFIGURED" or not receiver_addr:
+        final_price = 0
+
     return PriceQuote(
         level=level,
         base_price_usd=base_price,
@@ -134,7 +140,7 @@ def get_price_quote(
         final_price_usd=final_price,
         is_free=final_price == 0,
         accepted_tokens=list(ACCEPTED_TOKENS.keys()),
-        receiver_address=receiver or DEFAULT_RECEIVER,
+        receiver_address=receiver_addr,
     )
 
 
