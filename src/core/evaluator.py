@@ -78,6 +78,10 @@ class EvaluationResult:
         self.irt_se: Optional[float] = None
         self.confidence_interval: Optional[Dict[str, float]] = None
 
+        # Token usage tracking
+        self.token_usage: Optional[Dict[str, Any]] = None
+        self.cost_usd: Optional[float] = None
+
     def to_dict(self) -> dict:
         d = {
             "overall_score": self.overall_score,
@@ -109,6 +113,10 @@ class EvaluationResult:
             d["irt_se"] = self.irt_se
         if self.confidence_interval is not None:
             d["confidence_interval"] = self.confidence_interval
+        if self.token_usage is not None:
+            d["token_usage"] = self.token_usage
+        if self.cost_usd is not None:
+            d["cost_usd"] = self.cost_usd
         return d
 
 
@@ -128,6 +136,72 @@ class Evaluator:
         self.paraphraser = QuestionParaphraser(llm_judge, eval_mode=eval_mode) if paraphrase else None
         self.difficulty_tracker = DifficultyTracker()
         self.irt_service = irt_service
+
+    def collect_token_usage(self) -> Dict[str, Any]:
+        """Collect token usage from judge and paraphraser into a unified dict."""
+        from src.config import calculate_total_cost
+
+        usage: Dict[str, Any] = {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "by_provider": {},
+            "by_phase": {},
+        }
+
+        # Collect from judge metrics
+        judge = self.llm_judge
+        if hasattr(judge, "metrics"):
+            m = judge.metrics
+            usage["total_input_tokens"] += m.total_input_tokens
+            usage["total_output_tokens"] += m.total_output_tokens
+            for prov, prov_usage in m.by_provider.items():
+                if prov not in usage["by_provider"]:
+                    usage["by_provider"][prov] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+                usage["by_provider"][prov]["input_tokens"] += prov_usage.get("input_tokens", 0)
+                usage["by_provider"][prov]["output_tokens"] += prov_usage.get("output_tokens", 0)
+                usage["by_provider"][prov]["calls"] += prov_usage.get("calls", 0)
+            usage["by_phase"]["judging"] = {
+                "input_tokens": m.total_input_tokens,
+                "output_tokens": m.total_output_tokens,
+            }
+
+        # Collect from paraphraser
+        if self.paraphraser and self.paraphraser.llm_calls > 0:
+            para_in = self.paraphraser.total_input_tokens
+            para_out = self.paraphraser.total_output_tokens
+            usage["total_input_tokens"] += para_in
+            usage["total_output_tokens"] += para_out
+            usage["by_phase"]["paraphrasing"] = {
+                "input_tokens": para_in,
+                "output_tokens": para_out,
+            }
+            # Paraphraser uses the primary judge's provider
+            prov = getattr(judge, "provider", "unknown")
+            if prov not in usage["by_provider"]:
+                usage["by_provider"][prov] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+            usage["by_provider"][prov]["input_tokens"] += para_in
+            usage["by_provider"][prov]["output_tokens"] += para_out
+            usage["by_provider"][prov]["calls"] += self.paraphraser.llm_calls
+
+        # Optimization metrics from judge
+        optimization = {}
+        if hasattr(judge, "metrics"):
+            m = judge.metrics
+            optimization["llm_calls"] = m.llm_calls
+            optimization["fuzzy_routed"] = m.fuzzy_routed
+            optimization["cache_hits"] = m.cache_hits
+            optimization["total_judged"] = m.total_judged
+        if hasattr(judge, "_cascade_exits"):
+            optimization["cascade_exits"] = judge._cascade_exits
+        if optimization:
+            usage["optimization"] = optimization
+
+        # Calculate cost
+        cost_data = calculate_total_cost(usage["by_provider"])
+        usage["cost_usd"] = cost_data["total_cost_usd"]
+        usage["cost_by_provider"] = cost_data["by_provider"]
+
+        return usage
 
     def validate_manifest(self, manifest: dict) -> ManifestValidationResult:
         """Level 1: Validate MCP server manifest for completeness and quality."""
@@ -203,6 +277,7 @@ class Evaluator:
         case_idx = 0
         total_responses = sum(len(r) for r in tool_responses.values())
         judged_count = 0
+        judging_start = time.time()
         for tool_name, responses in tool_responses.items():
             tool_scores = []
             tests_passed = 0
@@ -257,6 +332,8 @@ class Evaluator:
             }
             all_scores.extend(tool_scores)
 
+        judging_ms = int((time.time() - judging_start) * 1000)
+
         # Aggregate style report
         penalties = [jr.get("style_penalty", 0) for jr in result.judge_responses]
         penalized_count = sum(1 for p in penalties if p > 0)
@@ -281,16 +358,28 @@ class Evaluator:
             result.confidence = round(max(0.1, sample_conf - variance_penalty), 2)
         else:
             result.confidence = round(sample_conf, 2)
-        result.duration_ms = int((time.time() - start) * 1000)
+        total_ms = int((time.time() - start) * 1000)
+        result.duration_ms = total_ms
 
         # Result hash for on-chain
         hash_data = f"{target_id}:{result.overall_score}:{result.questions_asked}:{int(time.time())}"
         result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
 
+        # Collect token usage
+        token_data = self.collect_token_usage()
+        token_data["phase_timing_ms"] = {
+            "judging_ms": judging_ms,
+            "total_ms": total_ms,
+        }
+        result.token_usage = token_data
+        result.cost_usd = token_data.get("cost_usd", 0.0)
+
         logger.info(
             f"Evaluation complete: {target_id} | "
             f"Score: {result.overall_score} | Tier: {result.tier} | "
-            f"Questions: {result.questions_asked}"
+            f"Questions: {result.questions_asked} | "
+            f"Tokens: {token_data['total_input_tokens']}in/{token_data['total_output_tokens']}out | "
+            f"Cost: ${token_data.get('cost_usd', 0):.6f}"
         )
 
         return result
@@ -426,11 +515,18 @@ class Evaluator:
         hash_data = f"{target_id}:{result.overall_score}:{result.questions_asked}:{int(time.time())}"
         result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
 
+        # Collect token usage
+        token_data = self.collect_token_usage()
+        result.token_usage = token_data
+        result.cost_usd = token_data.get("cost_usd", 0.0)
+
         logger.info(
             f"Streaming eval complete: {target_id} | "
             f"Score: {result.overall_score} | Tier: {result.tier} | "
             f"Questions: {result.questions_asked} | "
-            f"Early exit: {cancel.reason if cancel and cancel.is_cancelled else 'no'}"
+            f"Early exit: {cancel.reason if cancel and cancel.is_cancelled else 'no'} | "
+            f"Tokens: {token_data['total_input_tokens']}in/{token_data['total_output_tokens']}out | "
+            f"Cost: ${token_data.get('cost_usd', 0):.6f}"
         )
 
         return result
@@ -727,15 +823,19 @@ class Evaluator:
             run_safety: Whether to run adversarial safety probes
             run_consistency: Whether to run idempotency/consistency checks
         """
+        start = time.time()
+
         # Run functional evaluation (accuracy dimension)
         logger.info(f"[evaluate_full] {target_id}: Starting functional eval ({len(tool_responses)} tools)")
         if progress_cb:
             await progress_cb("functional_eval_start", 0.0)
+        judging_start = time.time()
         result = await self.evaluate_functional(
             target_id=target_id,
             tool_responses=tool_responses,
             manifest=manifest,
         )
+        judging_ms = int((time.time() - judging_start) * 1000)
         logger.info(f"[evaluate_full] {target_id}: Functional eval done, accuracy={result.overall_score}")
 
         accuracy_score = result.overall_score
@@ -842,12 +942,24 @@ class Evaluator:
         hash_data = f"{target_id}:{result.overall_score}:{result.questions_asked}:{int(time.time())}"
         result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
 
+        # Collect token usage
+        total_ms = int((time.time() - start) * 1000)
+        token_data = self.collect_token_usage()
+        token_data["phase_timing_ms"] = {
+            "judging_ms": judging_ms,
+            "total_ms": total_ms,
+        }
+        result.token_usage = token_data
+        result.cost_usd = token_data.get("cost_usd", 0.0)
+
         logger.info(
             f"Full evaluation: {target_id} | "
             f"Overall: {result.overall_score} | Tier: {result.tier} | "
             f"Dims: acc={accuracy_score} safe={safety_score} "
             f"proc={process_quality_score} rel={reliability_score} "
-            f"lat={latency_score} schema={schema_score}"
+            f"lat={latency_score} schema={schema_score} | "
+            f"Tokens: {token_data['total_input_tokens']}in/{token_data['total_output_tokens']}out | "
+            f"Cost: ${token_data.get('cost_usd', 0):.6f}"
         )
 
         return result

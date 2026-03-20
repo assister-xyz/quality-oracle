@@ -38,6 +38,8 @@ class ConsensusResult:
     judges_used: int
     latency_ms: int = 0
     cached: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 def _build_judges_from_settings() -> List[LLMJudge]:
@@ -204,6 +206,8 @@ class ConsensusJudge:
             method=result.method,
             cached=result.cached,
             latency_ms=result.latency_ms,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
         )
 
     async def ajudge_consensus(
@@ -272,6 +276,7 @@ class ConsensusJudge:
         # Run 1st judge alone; if score is decisive, skip remaining judges
         self.metrics.llm_calls += 1
         first_result = await llm_judges[0].ajudge(question, expected, answer)
+        self.metrics.record_tokens(first_result.provider or llm_judges[0].provider, first_result.input_tokens, first_result.output_tokens)
         if first_result.score >= SINGLE_JUDGE_HIGH_THRESHOLD or first_result.score <= SINGLE_JUDGE_LOW_THRESHOLD:
             self._cascade_exits += 1
             logger.debug(
@@ -287,6 +292,8 @@ class ConsensusJudge:
                 agreement=True,
                 judges_used=1,
                 latency_ms=first_result.latency_ms,
+                input_tokens=first_result.input_tokens,
+                output_tokens=first_result.output_tokens,
             )
 
         # Phase 1: Score was ambiguous — run 2nd judge
@@ -294,6 +301,7 @@ class ConsensusJudge:
             try:
                 self.metrics.llm_calls += 1
                 second_result = await llm_judges[1].ajudge(question, expected, answer)
+                self.metrics.record_tokens(second_result.provider or llm_judges[1].provider, second_result.input_tokens, second_result.output_tokens)
                 valid_results = [first_result, second_result]
             except Exception as e:
                 logger.warning(f"Second judge failed: {e}")
@@ -320,6 +328,8 @@ class ConsensusJudge:
             # Early termination — judges agree
             median_score = int(statistics.median(scores))
             total_latency = max(r.latency_ms for r in valid_results)
+            total_in = sum(r.input_tokens for r in valid_results)
+            total_out = sum(r.output_tokens for r in valid_results)
             return ConsensusResult(
                 score=median_score,
                 explanation=f"Consensus ({valid_results[0].method}+{valid_results[1].method}): {valid_results[0].explanation}",
@@ -329,6 +339,8 @@ class ConsensusJudge:
                 agreement=True,
                 judges_used=2,
                 latency_ms=total_latency,
+                input_tokens=total_in,
+                output_tokens=total_out,
             )
 
         # Phase 2: Disagreement — run 3rd judge as tiebreaker (if available)
@@ -336,6 +348,7 @@ class ConsensusJudge:
             try:
                 self.metrics.llm_calls += 1
                 third_result = await llm_judges[2].ajudge(question, expected, answer)
+                self.metrics.record_tokens(third_result.provider or llm_judges[2].provider, third_result.input_tokens, third_result.output_tokens)
                 valid_results.append(third_result)
                 scores.append(third_result.score)
             except Exception as e:
@@ -348,6 +361,8 @@ class ConsensusJudge:
     ) -> ConsensusResult:
         """Aggregate 2-3 judge results into consensus."""
         total_latency = max(r.latency_ms for r in results)
+        total_in = sum(r.input_tokens for r in results)
+        total_out = sum(r.output_tokens for r in results)
 
         if len(scores) == 3:
             # Check for majority agreement (any 2 of 3 within threshold)
@@ -365,6 +380,8 @@ class ConsensusJudge:
                         agreement=True,
                         judges_used=3,
                         latency_ms=total_latency,
+                        input_tokens=total_in,
+                        output_tokens=total_out,
                     )
 
             # All 3 disagree — take median, flag no agreement
@@ -378,6 +395,8 @@ class ConsensusJudge:
                 agreement=False,
                 judges_used=3,
                 latency_ms=total_latency,
+                input_tokens=total_in,
+                output_tokens=total_out,
             )
 
         # 2 judges, disagreed — take average
@@ -391,4 +410,6 @@ class ConsensusJudge:
             agreement=False,
             judges_used=2,
             latency_ms=total_latency,
+            input_tokens=total_in,
+            output_tokens=total_out,
         )

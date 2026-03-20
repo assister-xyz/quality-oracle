@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Tuple
 
@@ -286,6 +286,9 @@ class JudgeResult:
     method: str  # "llm", "fuzzy", or "fuzzy_routed"
     cached: bool = False
     latency_ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    provider: str = ""
 
 
 @dataclass
@@ -330,26 +333,56 @@ class _KeyRotator:
 
 @dataclass
 class JudgeMetrics:
-    """Tracks cost optimization metrics for a single evaluation session."""
+    """Tracks cost optimization and token usage metrics for a single evaluation session."""
     llm_calls: int = 0
     fuzzy_routed: int = 0
     cache_hits: int = 0
     total_judged: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    by_provider: Dict[str, Dict[str, int]] = field(default_factory=dict)
+
+    def record_tokens(self, provider: str, input_tokens: int, output_tokens: int):
+        """Record token usage for a provider."""
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        if provider not in self.by_provider:
+            self.by_provider[provider] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+        self.by_provider[provider]["input_tokens"] += input_tokens
+        self.by_provider[provider]["output_tokens"] += output_tokens
+        self.by_provider[provider]["calls"] += 1
 
     def summary(self) -> str:
         saved = self.fuzzy_routed + self.cache_hits
         pct = f"{saved / self.total_judged * 100:.0f}%" if self.total_judged else "0%"
+        tokens_str = f", tokens: {self.total_input_tokens}in/{self.total_output_tokens}out"
         return (
             f"Judge metrics: {self.total_judged} total, "
             f"{self.llm_calls} LLM, {self.fuzzy_routed} fuzzy-routed, "
             f"{self.cache_hits} cached ({pct} LLM calls saved)"
+            f"{tokens_str}"
         )
+
+    def to_dict(self) -> dict:
+        """Serialize token usage for storage."""
+        return {
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "by_provider": dict(self.by_provider),
+            "llm_calls": self.llm_calls,
+            "fuzzy_routed": self.fuzzy_routed,
+            "cache_hits": self.cache_hits,
+            "total_judged": self.total_judged,
+        }
 
     def reset(self):
         self.llm_calls = 0
         self.fuzzy_routed = 0
         self.cache_hits = 0
         self.total_judged = 0
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.by_provider = {}
 
 
 class LLMJudge:
@@ -552,6 +585,7 @@ class LLMJudge:
                 result.latency_ms = int((time.time() - start) * 1000)
                 self._store_cache(key, result)
                 self.metrics.llm_calls += 1
+                self.metrics.record_tokens(result.provider or self.provider, result.input_tokens, result.output_tokens)
                 return result
 
         # Try fallback provider (with key rotation)
@@ -565,6 +599,7 @@ class LLMJudge:
                 result.latency_ms = int((time.time() - start) * 1000)
                 self._store_cache(key, result)
                 self.metrics.llm_calls += 1
+                self.metrics.record_tokens(result.provider or self.fallback_provider, result.input_tokens, result.output_tokens)
                 return result
 
         # Try fallback2 provider (with key rotation)
@@ -578,6 +613,7 @@ class LLMJudge:
                 result.latency_ms = int((time.time() - start) * 1000)
                 self._store_cache(key, result)
                 self.metrics.llm_calls += 1
+                self.metrics.record_tokens(result.provider or self.fallback2_provider, result.input_tokens, result.output_tokens)
                 return result
 
         # Fuzzy fallback
@@ -648,8 +684,17 @@ class LLMJudge:
                 if parsed is None:
                     return None
 
+                # Extract token usage from provider response
+                usage = data.get("usage", {})
+                input_tokens = usage.get("prompt_tokens", 0)
+                output_tokens = usage.get("completion_tokens", 0)
+
                 score, explanation = parsed
-                return JudgeResult(score=score, explanation=explanation, method="llm")
+                return JudgeResult(
+                    score=score, explanation=explanation, method="llm",
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    provider=provider,
+                )
 
         except Exception as e:
             logger.warning(f"LLM judge error ({provider}): {e}")

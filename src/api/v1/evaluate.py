@@ -246,6 +246,8 @@ async def get_evaluation_status(
     irt_theta = None
     irt_se = None
     confidence_interval = None
+    token_usage = None
+    cost_usd = None
     scores_data = doc.get("scores")
     if scores_data and isinstance(scores_data, dict):
         gr = scores_data.get("gaming_risk")
@@ -255,6 +257,26 @@ async def get_evaluation_status(
         irt_theta = scores_data.get("irt_theta")
         irt_se = scores_data.get("irt_se")
         confidence_interval = scores_data.get("confidence_interval")
+        token_usage = scores_data.get("token_usage")
+        cost_usd = scores_data.get("cost_usd")
+
+    # Build cost_summary from existing token_usage data
+    cost_summary = None
+    if token_usage and isinstance(token_usage, dict):
+        total_in = token_usage.get("total_input_tokens", 0)
+        total_out = token_usage.get("total_output_tokens", 0)
+        tokens_total = total_in + total_out
+        questions_asked = scores_data.get("questions_asked", 0) if scores_data else 0
+        opt = token_usage.get("optimization", {})
+        cost_summary = {
+            "cost_usd": cost_usd or 0.0,
+            "tokens_total": tokens_total,
+            "tokens_per_question": round(tokens_total / questions_asked) if questions_asked else 0,
+            "providers_used": list(token_usage.get("by_provider", {}).keys()),
+            "llm_calls": opt.get("llm_calls", 0),
+            "cascade_exits": opt.get("cascade_exits", 0),
+            "fuzzy_routed": opt.get("fuzzy_routed", 0),
+        }
 
     return EvaluationStatus(
         evaluation_id=evaluation_id,
@@ -276,6 +298,9 @@ async def get_evaluation_status(
         irt_theta=irt_theta,
         irt_se=irt_se,
         confidence_interval=confidence_interval,
+        token_usage=token_usage,
+        cost_usd=cost_usd,
+        cost_summary=cost_summary,
     )
 
 
@@ -461,6 +486,10 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 scores["latency_stats"] = eval_result.latency_stats
             if eval_result.style_report:
                 scores["style_report"] = eval_result.style_report
+            # Token usage tracking (QO-017)
+            if eval_result.token_usage:
+                scores["token_usage"] = eval_result.token_usage
+                scores["cost_usd"] = eval_result.cost_usd
             if domain_result:
                 scores["domain_scores"] = domain_result.domain_scores
                 if domain_result.irt_theta is not None:
@@ -522,7 +551,11 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
 
         now = datetime.utcnow()
         eval_duration_ms = int((_time.time() - eval_start) * 1000)
-        logger.info(f"[{evaluation_id[:8]}] Scores aggregated: overall={scores.get('overall_score')} tier={scores.get('tier')} duration={eval_duration_ms}ms")
+        token_info = ""
+        if scores.get("token_usage"):
+            tu = scores["token_usage"]
+            token_info = f" tokens={tu.get('total_input_tokens', 0)}in/{tu.get('total_output_tokens', 0)}out cost=${scores.get('cost_usd', 0):.6f}"
+        logger.info(f"[{evaluation_id[:8]}] Scores aggregated: overall={scores.get('overall_score')} tier={scores.get('tier')} duration={eval_duration_ms}ms{token_info}")
 
         # Log cost optimization metrics
         if hasattr(judge, 'log_metrics'):
@@ -646,6 +679,8 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                     "latency_stats": scores.get("latency_stats", {}),
                     "duration_ms": eval_duration_ms,
                     "last_eval_mode": request.eval_mode.value,
+                    "last_token_usage": scores.get("token_usage"),
+                    "last_cost_usd": scores.get("cost_usd"),
                     "gaming_risk": gaming_risk_data.get("level") if gaming_risk_data else None,
                 },
                 "$inc": {"evaluation_count": 1},
@@ -671,6 +706,8 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             "evaluation_version": EVALUATION_VERSION,
             "eval_mode": request.eval_mode.value,
             "domain_scores": scores.get("domain_scores", {}),
+            "token_usage": scores.get("token_usage"),
+            "cost_usd": scores.get("cost_usd"),
             "recorded_at": now,
             "delta_from_previous": delta,
         })

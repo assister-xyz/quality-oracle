@@ -100,3 +100,50 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ── Provider Pricing (USD per 1M tokens) ────────────────────────────────────
+# Updated 2026-03-19. Free tiers tracked as $0 for quota monitoring.
+
+PROVIDER_PRICING = {
+    "cerebras": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free"},
+    "groq": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free"},
+    "openrouter": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free"},
+    "gemini": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free"},
+    "mistral": {"input_per_m": 0.1, "output_per_m": 0.3, "tier": "free"},
+    "deepseek": {"input_per_m": 0.14, "output_per_m": 0.28, "tier": "paid"},
+    "openai": {"input_per_m": 0.15, "output_per_m": 0.60, "tier": "paid"},
+}
+
+
+def calculate_cost(provider: str, input_tokens: int, output_tokens: int) -> float:
+    """Calculate USD cost for a given provider and token counts."""
+    pricing = PROVIDER_PRICING.get(provider, {})
+    input_cost = input_tokens * pricing.get("input_per_m", 0) / 1_000_000
+    output_cost = output_tokens * pricing.get("output_per_m", 0) / 1_000_000
+    return round(input_cost + output_cost, 8)
+
+
+def calculate_total_cost(by_provider: dict) -> dict:
+    """Calculate cost breakdown from per-provider token usage.
+
+    Args:
+        by_provider: Dict of provider -> {input_tokens, output_tokens, calls}
+
+    Returns:
+        {total_cost_usd, by_provider: {provider: cost_usd}}
+    """
+    cost_by_provider = {}
+    total = 0.0
+    for provider, usage in by_provider.items():
+        cost = calculate_cost(
+            provider,
+            usage.get("input_tokens", 0),
+            usage.get("output_tokens", 0),
+        )
+        cost_by_provider[provider] = cost
+        total += cost
+    return {
+        "total_cost_usd": round(total, 6),
+        "by_provider": cost_by_provider,
+    }

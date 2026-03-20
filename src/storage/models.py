@@ -114,6 +114,9 @@ class EvaluationStatus(BaseModel):
     irt_theta: Optional[float] = None
     irt_se: Optional[float] = None
     confidence_interval: Optional[Dict[str, float]] = None
+    token_usage: Optional[Dict[str, Any]] = None  # per-eval token tracking
+    cost_usd: Optional[float] = None  # total cost in USD
+    cost_summary: Optional[Dict[str, Any]] = None  # reshaped cost overview
 
 
 # Webhook payload model

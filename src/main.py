@@ -19,6 +19,7 @@ from src.api.v1.arena import router as arena_router
 from src.api.v1.rankings import router as rankings_router
 from src.api.v1.aiuc1 import router as aiuc1_router
 from src.api.v1.irt import router as irt_router
+from src.api.v1.costs import router as costs_router
 from src.api.agent_card import router as agent_card_router
 from src.storage.mongodb import connect_db, close_db
 from src.storage.cache import connect_redis, close_redis
@@ -92,6 +93,7 @@ app.include_router(arena_router, prefix="/v1", tags=["arena"])
 app.include_router(rankings_router, prefix="/v1", tags=["rankings"])
 app.include_router(aiuc1_router, prefix="/v1", tags=["aiuc1"])
 app.include_router(irt_router, prefix="/v1", tags=["irt"])
+app.include_router(costs_router, prefix="/v1", tags=["costs"])
 app.include_router(agent_card_router, tags=["a2a"])
 
 

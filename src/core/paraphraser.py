@@ -163,6 +163,10 @@ class QuestionParaphraser:
             self._llm_available
             and eval_mode in ("certified", "audited")
         )
+        # Token usage tracking for paraphraser LLM calls
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
+        self.llm_calls: int = 0
 
     def generate_seed(self, target_id: str, run_id: str = "") -> int:
         """Generate a deterministic seed from target + run identifiers."""
@@ -260,6 +264,14 @@ class QuestionParaphraser:
                 response = await client.post(url, headers=headers, json=body)
                 if response.status_code == 200:
                     data = response.json()
+                    # Extract token usage
+                    usage = data.get("usage", {})
+                    in_tok = usage.get("prompt_tokens", 0)
+                    out_tok = usage.get("completion_tokens", 0)
+                    self.total_input_tokens += in_tok
+                    self.total_output_tokens += out_tok
+                    self.llm_calls += 1
+
                     rephrased = data["choices"][0]["message"]["content"].strip()
                     if rephrased and len(rephrased) > 10:
                         return rephrased
