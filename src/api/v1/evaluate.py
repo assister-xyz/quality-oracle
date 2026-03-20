@@ -268,14 +268,21 @@ async def get_evaluation_status(
         tokens_total = total_in + total_out
         questions_asked = scores_data.get("questions_asked", 0) if scores_data else 0
         opt = token_usage.get("optimization", {})
+        shadow_cost = token_usage.get("shadow_cost_usd", 0.0)
+        timing = token_usage.get("phase_timing_ms", {})
         cost_summary = {
             "cost_usd": cost_usd or 0.0,
+            "shadow_cost_usd": shadow_cost,
             "tokens_total": tokens_total,
+            "tokens_input": total_in,
+            "tokens_output": total_out,
             "tokens_per_question": round(tokens_total / questions_asked) if questions_asked else 0,
             "providers_used": list(token_usage.get("by_provider", {}).keys()),
             "llm_calls": opt.get("llm_calls", 0),
             "cascade_exits": opt.get("cascade_exits", 0),
             "fuzzy_routed": opt.get("fuzzy_routed", 0),
+            "judging_ms": timing.get("judging_ms"),
+            "total_ms": timing.get("total_ms"),
         }
 
     return EvaluationStatus(

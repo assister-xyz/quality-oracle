@@ -196,9 +196,10 @@ class Evaluator:
         if optimization:
             usage["optimization"] = optimization
 
-        # Calculate cost
+        # Calculate cost (actual + shadow/market rate)
         cost_data = calculate_total_cost(usage["by_provider"])
         usage["cost_usd"] = cost_data["total_cost_usd"]
+        usage["shadow_cost_usd"] = cost_data["shadow_cost_usd"]
         usage["cost_by_provider"] = cost_data["by_provider"]
 
         return usage

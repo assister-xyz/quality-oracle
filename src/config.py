@@ -106,13 +106,21 @@ settings = Settings()
 # Updated 2026-03-19. Free tiers tracked as $0 for quota monitoring.
 
 PROVIDER_PRICING = {
-    "cerebras": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free"},
-    "groq": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free"},
-    "openrouter": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free"},
-    "gemini": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free"},
-    "mistral": {"input_per_m": 0.1, "output_per_m": 0.3, "tier": "free"},
-    "deepseek": {"input_per_m": 0.14, "output_per_m": 0.28, "tier": "paid"},
-    "openai": {"input_per_m": 0.15, "output_per_m": 0.60, "tier": "paid"},
+    # actual = what we pay (free tier); market = paid API rate for same model
+    "cerebras": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free",
+                 "market_input_per_m": 0.10, "market_output_per_m": 0.10},   # llama3.1-8b
+    "groq": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free",
+             "market_input_per_m": 0.05, "market_output_per_m": 0.08},       # llama-3.1-8b-instant
+    "openrouter": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free",
+                   "market_input_per_m": 0.09, "market_output_per_m": 1.10}, # qwen3-80b-a3b-instruct
+    "gemini": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free",
+               "market_input_per_m": 0.075, "market_output_per_m": 0.30},    # gemini-2.0-flash
+    "mistral": {"input_per_m": 0.1, "output_per_m": 0.3, "tier": "free",
+                "market_input_per_m": 0.1, "market_output_per_m": 0.3},
+    "deepseek": {"input_per_m": 0.14, "output_per_m": 0.28, "tier": "paid",
+                 "market_input_per_m": 0.14, "market_output_per_m": 0.28},
+    "openai": {"input_per_m": 0.15, "output_per_m": 0.60, "tier": "paid",
+               "market_input_per_m": 0.15, "market_output_per_m": 0.60},
 }
 
 
@@ -124,6 +132,14 @@ def calculate_cost(provider: str, input_tokens: int, output_tokens: int) -> floa
     return round(input_cost + output_cost, 8)
 
 
+def calculate_market_cost(provider: str, input_tokens: int, output_tokens: int) -> float:
+    """Calculate what this would cost at paid API market rates."""
+    pricing = PROVIDER_PRICING.get(provider, {})
+    input_cost = input_tokens * pricing.get("market_input_per_m", pricing.get("input_per_m", 0)) / 1_000_000
+    output_cost = output_tokens * pricing.get("market_output_per_m", pricing.get("output_per_m", 0)) / 1_000_000
+    return round(input_cost + output_cost, 8)
+
+
 def calculate_total_cost(by_provider: dict) -> dict:
     """Calculate cost breakdown from per-provider token usage.
 
@@ -131,19 +147,21 @@ def calculate_total_cost(by_provider: dict) -> dict:
         by_provider: Dict of provider -> {input_tokens, output_tokens, calls}
 
     Returns:
-        {total_cost_usd, by_provider: {provider: cost_usd}}
+        {total_cost_usd, shadow_cost_usd, by_provider: {provider: {actual, market}}}
     """
     cost_by_provider = {}
     total = 0.0
+    shadow_total = 0.0
     for provider, usage in by_provider.items():
-        cost = calculate_cost(
-            provider,
-            usage.get("input_tokens", 0),
-            usage.get("output_tokens", 0),
-        )
-        cost_by_provider[provider] = cost
-        total += cost
+        in_tok = usage.get("input_tokens", 0)
+        out_tok = usage.get("output_tokens", 0)
+        actual = calculate_cost(provider, in_tok, out_tok)
+        market = calculate_market_cost(provider, in_tok, out_tok)
+        cost_by_provider[provider] = {"actual": actual, "market": market}
+        total += actual
+        shadow_total += market
     return {
         "total_cost_usd": round(total, 6),
+        "shadow_cost_usd": round(shadow_total, 6),
         "by_provider": cost_by_provider,
     }

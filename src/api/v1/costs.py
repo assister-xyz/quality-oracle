@@ -48,6 +48,7 @@ async def get_cost_analytics(
                 "total_input_tokens": {"$sum": "$scores.token_usage.total_input_tokens"},
                 "total_output_tokens": {"$sum": "$scores.token_usage.total_output_tokens"},
                 "total_cost_usd": {"$sum": "$scores.cost_usd"},
+                "total_shadow_cost_usd": {"$sum": "$scores.token_usage.shadow_cost_usd"},
                 "avg_cost_usd": {"$avg": "$scores.cost_usd"},
                 "min_cost_usd": {"$min": "$scores.cost_usd"},
                 "max_cost_usd": {"$max": "$scores.cost_usd"},
@@ -64,6 +65,7 @@ async def get_cost_analytics(
     total_input = sum(r["total_input_tokens"] for r in results)
     total_output = sum(r["total_output_tokens"] for r in results)
     total_cost = sum(r["total_cost_usd"] for r in results)
+    total_shadow = sum(r.get("total_shadow_cost_usd") or 0 for r in results)
 
     # Per-mode breakdown
     avg_cost_per_mode = {}
@@ -141,12 +143,27 @@ async def get_cost_analytics(
     efficiency = {
         "avg_tokens_per_question": round(total_tokens / total_questions) if total_questions else 0,
         "avg_cost_per_question": round(total_cost / total_questions, 6) if total_questions else 0,
+        "avg_shadow_cost_per_question": round(total_shadow / total_questions, 6) if total_questions else 0,
         "total_questions": total_questions,
     }
 
+    # Compute shadow cost from current token totals using market rates
+    # (fallback for evals that predate shadow_cost_usd field)
+    if total_shadow == 0 and total_tokens > 0:
+        from src.config import calculate_market_cost
+        # Estimate shadow using dominant provider (cerebras for verified mode)
+        total_shadow = calculate_market_cost("cerebras", total_input, total_output)
+        efficiency["avg_shadow_cost_per_question"] = round(total_shadow / total_questions, 6) if total_questions else 0
+
     # Provider pricing reference
     pricing_ref = {
-        k: {"input_per_m_usd": v["input_per_m"], "output_per_m_usd": v["output_per_m"], "tier": v["tier"]}
+        k: {
+            "actual_input_per_m": v["input_per_m"],
+            "actual_output_per_m": v["output_per_m"],
+            "market_input_per_m": v.get("market_input_per_m", v["input_per_m"]),
+            "market_output_per_m": v.get("market_output_per_m", v["output_per_m"]),
+            "tier": v["tier"],
+        }
         for k, v in PROVIDER_PRICING.items()
     }
 
@@ -154,12 +171,15 @@ async def get_cost_analytics(
         "period": period,
         "total_evaluations": total_evals,
         "total_cost_usd": round(total_cost, 6),
+        "shadow_cost_usd": round(total_shadow, 6),
+        "savings_usd": round(total_shadow - total_cost, 6),
         "total_tokens": {
             "input": total_input,
             "output": total_output,
             "total": total_tokens,
         },
         "avg_cost_per_eval": round(total_cost / total_evals, 6) if total_evals else 0,
+        "avg_shadow_cost_per_eval": round(total_shadow / total_evals, 6) if total_evals else 0,
         "by_eval_mode": avg_cost_per_mode,
         "by_level": by_level,
         "efficiency": efficiency,
