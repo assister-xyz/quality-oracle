@@ -621,10 +621,11 @@ class TestGap4PaymentE2E:
 
     def test_tier_discounts_applied_correctly(self):
         """Different tiers should get different prices."""
-        free_l2 = get_price_quote(2, "free")
-        dev_l2 = get_price_quote(2, "developer")
-        team_l2 = get_price_quote(2, "team")
-        market_l2 = get_price_quote(2, "marketplace")
+        r = "TestWallet"  # Provide receiver to avoid NOT_CONFIGURED bypass
+        free_l2 = get_price_quote(2, "free", receiver=r)
+        dev_l2 = get_price_quote(2, "developer", receiver=r)
+        team_l2 = get_price_quote(2, "team", receiver=r)
+        market_l2 = get_price_quote(2, "marketplace", receiver=r)
 
         # Free tier has no discount
         assert free_l2.final_price_usd == 0.01
@@ -642,7 +643,7 @@ class TestGap4PaymentE2E:
         Uses free tier (no discount) to test actual payment flow.
         """
         # Step 1: Get price quote (use free tier to get a real price)
-        quote = get_price_quote(2, "free")
+        quote = get_price_quote(2, "free", receiver="TestWallet")
         assert not quote.is_free
         assert quote.final_price_usd == 0.01
 
@@ -682,24 +683,26 @@ class TestGap4PaymentE2E:
         """require_payment() should orchestrate the full flow."""
         from fastapi import HTTPException
 
-        # Free level → None
-        result = await require_payment(level=1, tier="free", x_payment=None)
-        assert result is None
+        # Patch receiver so pricing doesn't bypass to free mode
+        with patch("src.payments.pricing.DEFAULT_RECEIVER", "TestWallet"):
+            # Free level → None
+            result = await require_payment(level=1, tier="free", x_payment=None)
+            assert result is None
 
-        # Developer tier: 100% discount → level 2 is free
-        result = await require_payment(level=2, tier="developer", x_payment=None)
-        assert result is None
+            # Developer tier: 100% discount → level 2 is free
+            result = await require_payment(level=2, tier="developer", x_payment=None)
+            assert result is None
 
-        # Paid level (free tier), no payment → 402
-        with pytest.raises(HTTPException) as exc_info:
-            await require_payment(level=2, tier="free", x_payment=None)
-        assert exc_info.value.status_code == 402
+            # Paid level (free tier), no payment → 402
+            with pytest.raises(HTTPException) as exc_info:
+                await require_payment(level=2, tier="free", x_payment=None)
+            assert exc_info.value.status_code == 402
 
-        # Paid level, invalid payment → 402 with verification_failed
-        with pytest.raises(HTTPException) as exc_info:
-            await require_payment(level=3, tier="free", x_payment="bad")
-        assert exc_info.value.status_code == 402
-        assert exc_info.value.detail["error"] == "payment_verification_failed"
+            # Paid level, invalid payment → 402 with verification_failed
+            with pytest.raises(HTTPException) as exc_info:
+                await require_payment(level=3, tier="free", x_payment="bad")
+            assert exc_info.value.status_code == 402
+            assert exc_info.value.detail["error"] == "payment_verification_failed"
 
 
 # ════════════════════════════════════════════════════════════════════════════════

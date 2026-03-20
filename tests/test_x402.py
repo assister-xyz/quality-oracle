@@ -47,12 +47,12 @@ class TestPricingModel:
             assert quote.final_price_usd == 0
 
     def test_level_2_base_price(self):
-        quote = get_price_quote(2, "free")
+        quote = get_price_quote(2, "free", receiver="TestWallet")
         assert quote.base_price_usd == 0.01
         assert quote.final_price_usd == 0.01  # No discount for free tier
 
     def test_level_3_base_price(self):
-        quote = get_price_quote(3, "free")
+        quote = get_price_quote(3, "free", receiver="TestWallet")
         assert quote.base_price_usd == 0.05
         assert quote.final_price_usd == 0.05
 
@@ -63,12 +63,12 @@ class TestPricingModel:
         assert quote.is_free
 
     def test_team_discount(self):
-        quote = get_price_quote(3, "team")
+        quote = get_price_quote(3, "team", receiver="TestWallet")
         assert quote.discount_rate == 0.40
         assert quote.final_price_usd == 0.03  # 0.05 * 0.60
 
     def test_marketplace_discount(self):
-        quote = get_price_quote(2, "marketplace")
+        quote = get_price_quote(2, "marketplace", receiver="TestWallet")
         assert quote.discount_rate == 0.60
         assert quote.final_price_usd == 0.004  # 0.01 * 0.40
 
@@ -87,7 +87,7 @@ class TestPricingModel:
         assert "accepted_tokens" in d
 
     def test_unknown_tier_no_discount(self):
-        quote = get_price_quote(2, "unknown_tier")
+        quote = get_price_quote(2, "unknown_tier", receiver="TestWallet")
         assert quote.discount_rate == 0.0
         assert quote.final_price_usd == 0.01
 
@@ -102,8 +102,9 @@ class TestPricingModel:
         assert table[2]["is_free"]  # developer tier: 100% off during dev
 
     def test_pricing_table_discounts_applied(self):
-        free_table = get_pricing_table("free")
-        team_table = get_pricing_table("team")
+        # Pass receiver to avoid NOT_CONFIGURED bypass
+        free_table = [get_price_quote(lvl, "free", receiver="TestWallet").to_dict() for lvl in [1, 2, 3]]
+        team_table = [get_price_quote(lvl, "team", receiver="TestWallet").to_dict() for lvl in [1, 2, 3]]
         # Level 2: team should be cheaper
         assert team_table[1]["final_price_usd"] < free_table[1]["final_price_usd"]
 
@@ -509,16 +510,17 @@ class TestRequirePayment:
     @pytest.mark.asyncio
     async def test_paid_level_no_header_returns_402(self):
         from fastapi import HTTPException
-        with pytest.raises(HTTPException) as exc_info:
-            await require_payment(level=2, tier="free", x_payment=None)
-        assert exc_info.value.status_code == 402
-        detail = exc_info.value.detail
-        assert detail["error"] == "payment_required"
-        assert "payment_requirements" in detail
+        with patch("src.payments.pricing.DEFAULT_RECEIVER", "TestWallet"):
+            with pytest.raises(HTTPException) as exc_info:
+                await require_payment(level=2, tier="free", x_payment=None)
+            assert exc_info.value.status_code == 402
+            detail = exc_info.value.detail
+            assert detail["error"] == "payment_required"
+            assert "payment_requirements" in detail
 
     @pytest.mark.asyncio
     async def test_paid_level_with_valid_payment(self):
-        with _patch_receipts():
+        with patch("src.payments.pricing.DEFAULT_RECEIVER", "TestWallet"), _patch_receipts():
             receipt = await require_payment(
                 level=2,
                 tier="free",
@@ -530,10 +532,11 @@ class TestRequirePayment:
     @pytest.mark.asyncio
     async def test_paid_level_with_invalid_payment(self):
         from fastapi import HTTPException
-        with pytest.raises(HTTPException) as exc_info:
-            await require_payment(level=2, tier="free", x_payment="bad")
-        assert exc_info.value.status_code == 402
-        assert exc_info.value.detail["error"] == "payment_verification_failed"
+        with patch("src.payments.pricing.DEFAULT_RECEIVER", "TestWallet"):
+            with pytest.raises(HTTPException) as exc_info:
+                await require_payment(level=2, tier="free", x_payment="bad")
+            assert exc_info.value.status_code == 402
+            assert exc_info.value.detail["error"] == "payment_verification_failed"
 
 
 # ── API Integration ──────────────────────────────────────────────────────────

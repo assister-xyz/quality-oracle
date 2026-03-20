@@ -149,6 +149,8 @@ def test_client(mock_api_key_doc):
         patch("src.storage.mongodb.close_db", new_callable=AsyncMock),
         patch("src.storage.cache.connect_redis", new_callable=AsyncMock),
         patch("src.storage.cache.close_redis", new_callable=AsyncMock),
+        # Prevent lifespan from hitting real DB for API key seeding
+        patch("src.main._ensure_default_api_key", new_callable=AsyncMock),
     ]
 
     for p in patches:
