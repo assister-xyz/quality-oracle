@@ -1,129 +1,327 @@
 """SVG badge generation for quality scores.
 
-Apple-inspired design: taller badge (28px), rounded corners (6px),
-clean SF-style typography, distinct shield icons per trust level.
+Laureum.ai laurel-wreath design: dark badge with score circle,
+laurel wreath branches, tier branding, and evaluation date.
 """
-from fastapi import APIRouter
-from fastapi.responses import Response
 
-from src.storage.mongodb import scores_col
+from datetime import datetime, timezone
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse, Response
+
+from src.config import settings
 from src.storage.models import normalize_eval_mode
+from src.storage.mongodb import scores_col
 
 router = APIRouter()
 
-# Tier → right-section color
-TIER_COLORS = {
-    "expert": "#34C759",      # Apple green
-    "proficient": "#007AFF",  # Apple blue
-    "basic": "#FF9500",       # Apple orange
-    "failed": "#FF3B30",      # Apple red
-    "unknown": "#8E8E93",     # Apple gray
+# ── Laureum tier colors ──────────────────────────────────────────────────────
+
+LAUREUM_TIER_COLORS = {
+    "verified": "#C38133",   # Bronze
+    "certified": "#C0C0C0",  # Silver
+    "audited": "#FFD700",    # Gold
+    "failed": "#555555",     # Gray
+    "unknown": "#555555",    # Gray
 }
 
-# Brand orange for left section
-BRAND_COLOR = "#F66824"
+# Score → tier mapping
+TIER_THRESHOLDS = [
+    (90, "audited"),
+    (75, "certified"),
+    (50, "verified"),
+]
 
-# Shield SVG icons per trust level (10x12 viewBox)
-# Verified: simple shield outline
-SHIELD_VERIFIED = (
-    '<path d="M5 0.5L0.5 2.5V6c0 2.8 1.8 5.4 4.5 6.5C7.7 11.4 9.5 8.8 9.5 6V2.5L5 0.5z" '
-    'fill="none" stroke="#fff" stroke-width="1.1" stroke-linejoin="round"/>'
-)
-# Certified: shield with single checkmark
-SHIELD_CERTIFIED = (
-    '<path d="M5 0.5L0.5 2.5V6c0 2.8 1.8 5.4 4.5 6.5C7.7 11.4 9.5 8.8 9.5 6V2.5L5 0.5z" '
-    'fill="none" stroke="#fff" stroke-width="1.1" stroke-linejoin="round"/>'
-    '<path d="M3 6.2l1.5 1.5 2.5-3" fill="none" stroke="#fff" stroke-width="1.2" '
-    'stroke-linecap="round" stroke-linejoin="round"/>'
-)
-# Audited: filled shield with star
-SHIELD_AUDITED = (
-    '<path d="M5 0.5L0.5 2.5V6c0 2.8 1.8 5.4 4.5 6.5C7.7 11.4 9.5 8.8 9.5 6V2.5L5 0.5z" '
-    'fill="rgba(255,255,255,0.25)" stroke="#fff" stroke-width="1.1" stroke-linejoin="round"/>'
-    '<path d="M5 3.5l0.7 1.4 1.6 0.2-1.15 1.1 0.3 1.6L5 7.1 3.55 7.8l0.3-1.6L2.7 5.1l1.6-0.2z" '
-    'fill="#fff"/>'
+FONT_FAMILY = (
+    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 )
 
-SHIELD_ICONS = {
-    "verified": SHIELD_VERIFIED,
-    "certified": SHIELD_CERTIFIED,
-    "audited": SHIELD_AUDITED,
+# Keep old colors accessible for badge_renderer re-export
+TIER_COLORS = LAUREUM_TIER_COLORS
+
+# Days after which a badge is considered stale
+FRESHNESS_DAYS = 30
+
+
+def _score_to_tier(score: int) -> str:
+    """Map numeric score to tier name."""
+    for threshold, tier in TIER_THRESHOLDS:
+        if score >= threshold:
+            return tier
+    return "failed"
+
+
+# ── Laurel wreath SVG paths ──────────────────────────────────────────────────
+
+
+def _laurel_wreath_paths(color: str, opacity: float = 1.0) -> str:
+    """Return SVG <g> element with left/right laurel wreath branches."""
+    return f"""<g opacity="{opacity}">
+    <!-- Left branch -->
+    <g transform="translate(12, 16)">
+      <path d="M18 3C15 1 12 2 10 5C8 2 5 1 2 3C4 5 5 8 5 11C3 9 1 9 0 10C2 12 4 13 6 13C5 15 5 17 6 19C8 17 9 15 9 13C9 16 10 19 12 22C12 19 12 16 11 13C13 15 15 16 17 16C16 14 14 13 12 12C15 13 17 12 19 10C17 9 15 9 14 11C14 8 15 5 18 3Z" fill="{color}" opacity="0.85"/>
+    </g>
+    <!-- Right branch -->
+    <g transform="translate(30, 16) scale(-1,1)">
+      <path d="M18 3C15 1 12 2 10 5C8 2 5 1 2 3C4 5 5 8 5 11C3 9 1 9 0 10C2 12 4 13 6 13C5 15 5 17 6 19C8 17 9 15 9 13C9 16 10 19 12 22C12 19 12 16 11 13C13 15 15 16 17 16C16 14 14 13 12 12C15 13 17 12 19 10C17 9 15 9 14 11C14 8 15 5 18 3Z" fill="{color}" opacity="0.85"/>
+    </g>
+  </g>"""
+
+
+# ── Badge renderers ──────────────────────────────────────────────────────────
+
+
+def _render_laureum_badge(
+    score: int,
+    tier: str,
+    eval_mode: str | None = None,
+    evaluated_at: str | None = None,
+    size: str = "inline",
+) -> str:
+    """Render a Laureum.ai laurel-wreath SVG badge.
+
+    Args:
+        score: Quality score 0-100.
+        tier: Tier name (verified/certified/audited/failed).
+        eval_mode: Evaluation mode label.
+        evaluated_at: ISO date string of last evaluation.
+        size: 'inline' (240x80) or 'square' (200x200).
+    """
+    color = LAUREUM_TIER_COLORS.get(tier, LAUREUM_TIER_COLORS["unknown"])
+    tier_label = tier.upper() if tier != "unknown" else "UNRATED"
+
+    # Freshness — reduce wreath opacity if stale
+    wreath_opacity = 1.0
+    date_label = ""
+    if evaluated_at:
+        try:
+            eval_dt = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
+            days_old = (datetime.now(timezone.utc) - eval_dt).days
+            if days_old > FRESHNESS_DAYS:
+                wreath_opacity = 0.5
+            date_label = eval_dt.strftime("%b %Y")
+        except (ValueError, TypeError):
+            pass
+
+    if size == "square":
+        return _render_square_badge(score, tier, tier_label, color, wreath_opacity, date_label)
+
+    return _render_inline_badge(score, tier, tier_label, color, wreath_opacity, date_label)
+
+
+def _render_inline_badge(
+    score: int,
+    tier: str,
+    tier_label: str,
+    color: str,
+    wreath_opacity: float,
+    date_label: str,
+) -> str:
+    """Render inline (240x80) badge."""
+    w, h = 240, 80
+
+    # Score circle parameters
+    cx, cy, r = 40, 40, 22
+    circumference = 2 * 3.14159 * r
+    fill_pct = max(0, min(score, 100)) / 100
+    dash = circumference * fill_pct
+    gap = circumference - dash
+
+    wreath_svg = _laurel_wreath_paths(color, wreath_opacity)
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img" aria-label="Laureum: {score}/100 {tier}">
+  <title>Laureum {tier_label}: {score}/100</title>
+  <rect width="{w}" height="{h}" rx="8" fill="#0E0E0C"/>
+  <!-- Score circle -->
+  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#333" stroke-width="3"/>
+  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="3"
+    stroke-dasharray="{dash:.1f} {gap:.1f}" stroke-linecap="round"
+    transform="rotate(-90 {cx} {cy})"/>
+  <text x="{cx}" y="{cy + 5}" text-anchor="middle" fill="#fff"
+    font-family="{FONT_FAMILY}" font-size="16" font-weight="700">{score}</text>
+  <!-- Laurel wreath -->
+  {wreath_svg}
+  <!-- Text section -->
+  <text x="90" y="28" fill="{color}" font-family="{FONT_FAMILY}"
+    font-size="14" font-weight="700" letter-spacing="1.5">{tier_label}</text>
+  <text x="90" y="48" fill="#999" font-family="{FONT_FAMILY}"
+    font-size="10" font-weight="500" letter-spacing="0.8">LAUREUM.AI</text>
+  <text x="90" y="65" fill="#666" font-family="{FONT_FAMILY}"
+    font-size="9">{date_label}</text>
+</svg>'''
+
+
+def _render_square_badge(
+    score: int,
+    tier: str,
+    tier_label: str,
+    color: str,
+    wreath_opacity: float,
+    date_label: str,
+) -> str:
+    """Render square (200x200) badge."""
+    w, h = 200, 200
+    cx, cy, r = 100, 85, 40
+    circumference = 2 * 3.14159 * r
+    fill_pct = max(0, min(score, 100)) / 100
+    dash = circumference * fill_pct
+    gap = circumference - dash
+
+    # Larger wreath centered on score circle
+    wreath_svg = f"""<g opacity="{wreath_opacity}">
+    <g transform="translate(48, 52)">
+      <path d="M18 3C15 1 12 2 10 5C8 2 5 1 2 3C4 5 5 8 5 11C3 9 1 9 0 10C2 12 4 13 6 13C5 15 5 17 6 19C8 17 9 15 9 13C9 16 10 19 12 22C12 19 12 16 11 13C13 15 15 16 17 16C16 14 14 13 12 12C15 13 17 12 19 10C17 9 15 9 14 11C14 8 15 5 18 3Z"
+        fill="{color}" opacity="0.85" transform="scale(1.8)"/>
+    </g>
+    <g transform="translate(152, 52) scale(-1,1)">
+      <path d="M18 3C15 1 12 2 10 5C8 2 5 1 2 3C4 5 5 8 5 11C3 9 1 9 0 10C2 12 4 13 6 13C5 15 5 17 6 19C8 17 9 15 9 13C9 16 10 19 12 22C12 19 12 16 11 13C13 15 15 16 17 16C16 14 14 13 12 12C15 13 17 12 19 10C17 9 15 9 14 11C14 8 15 5 18 3Z"
+        fill="{color}" opacity="0.85" transform="scale(1.8)"/>
+    </g>
+  </g>"""
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img" aria-label="Laureum: {score}/100 {tier}">
+  <title>Laureum {tier_label}: {score}/100</title>
+  <rect width="{w}" height="{h}" rx="12" fill="#0E0E0C"/>
+  <!-- Score circle -->
+  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#333" stroke-width="4"/>
+  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="4"
+    stroke-dasharray="{dash:.1f} {gap:.1f}" stroke-linecap="round"
+    transform="rotate(-90 {cx} {cy})"/>
+  <text x="{cx}" y="{cy + 8}" text-anchor="middle" fill="#fff"
+    font-family="{FONT_FAMILY}" font-size="28" font-weight="700">{score}</text>
+  <!-- Laurel wreath -->
+  {wreath_svg}
+  <!-- Text section -->
+  <text x="{cx}" y="150" text-anchor="middle" fill="{color}"
+    font-family="{FONT_FAMILY}" font-size="16" font-weight="700"
+    letter-spacing="2">{tier_label}</text>
+  <text x="{cx}" y="172" text-anchor="middle" fill="#999"
+    font-family="{FONT_FAMILY}" font-size="11" font-weight="500"
+    letter-spacing="1">LAUREUM.AI</text>
+  <text x="{cx}" y="190" text-anchor="middle" fill="#666"
+    font-family="{FONT_FAMILY}" font-size="9">{date_label}</text>
+</svg>'''
+
+
+# ── Legacy renderer (backward compat) ───────────────────────────────────────
+
+# Old tier colors kept for reference
+_LEGACY_TIER_COLORS = {
+    "expert": "#34C759",
+    "proficient": "#007AFF",
+    "basic": "#FF9500",
+    "failed": "#FF3B30",
+    "unknown": "#8E8E93",
 }
 
-HEIGHT = 28
-RADIUS = 6
-FONT_SIZE = 11
-ICON_SIZE = 12  # viewBox width of shield icons
 
-
-def _render_badge(score: int, tier: str, eval_mode: str | None = None) -> str:
-    """Render a premium SVG badge — Apple-inspired design."""
-    right_color = TIER_COLORS.get(tier, TIER_COLORS["unknown"])
-
-    # Capitalize trust level label
+def _render_badge_legacy(score: int, tier: str, eval_mode: str | None = None) -> str:
+    """Legacy Apple-style flat badge (28px). Kept for backward compat."""
+    right_color = _LEGACY_TIER_COLORS.get(tier, _LEGACY_TIER_COLORS["unknown"])
     label = (eval_mode or "quality").upper()
     value = f"{score}  {tier.upper()}"
-
-    # Compute widths
-    icon_area = 20  # shield icon space
+    icon_area = 20
     label_text_w = len(label) * 6.8 + 12
     left_w = icon_area + label_text_w
     value_text_w = len(value) * 6.5 + 16
     total_w = left_w + value_text_w
+    h = 28
+    r = 6
+    fs = 11
+    brand = "#F66824"
 
-    # Shield icon for the trust level
-    shield = SHIELD_ICONS.get(eval_mode or "", SHIELD_VERIFIED)
-    shield_svg = f'<g transform="translate(6, {(HEIGHT - ICON_SIZE) / 2}) scale(1)">{shield}</g>'
-
-    # Score circle indicator (small dot)
-    left_w + 10
-
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{HEIGHT}" role="img" aria-label="AgentTrust: {score}/100 {tier}">
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{h}" role="img" aria-label="AgentTrust: {score}/100 {tier}">
   <title>AgentTrust {eval_mode or "quality"}: {score}/100 {tier}</title>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity=".12"/>
-      <stop offset="1" stop-color="#000" stop-opacity=".08"/>
-    </linearGradient>
-    <clipPath id="clip">
-      <rect width="{total_w}" height="{HEIGHT}" rx="{RADIUS}"/>
-    </clipPath>
+    <clipPath id="clip"><rect width="{total_w}" height="{h}" rx="{r}"/></clipPath>
   </defs>
   <g clip-path="url(#clip)">
-    <rect width="{left_w}" height="{HEIGHT}" fill="{BRAND_COLOR}"/>
-    <rect x="{left_w}" width="{value_text_w}" height="{HEIGHT}" fill="{right_color}"/>
-    <rect width="{total_w}" height="{HEIGHT}" fill="url(#bg)"/>
+    <rect width="{left_w}" height="{h}" fill="{brand}"/>
+    <rect x="{left_w}" width="{value_text_w}" height="{h}" fill="{right_color}"/>
   </g>
-  <g clip-path="url(#clip)">
-    <rect x="{left_w - 0.5}" y="0" width="1" height="{HEIGHT}" fill="#000" opacity="0.1"/>
+  <g fill="#fff" font-family="{FONT_FAMILY}" font-size="{fs}" font-weight="600">
+    <text x="{icon_area + label_text_w / 2}" y="{h / 2 + 4}" text-anchor="middle">{label}</text>
   </g>
-  {shield_svg}
-  <g fill="#fff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="{FONT_SIZE}" font-weight="600">
-    <text x="{icon_area + label_text_w / 2}" y="{HEIGHT / 2 + 4}" text-anchor="middle" opacity="0.95">{label}</text>
-  </g>
-  <g fill="#fff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="{FONT_SIZE}" font-weight="700" letter-spacing="0.3">
-    <text x="{left_w + value_text_w / 2}" y="{HEIGHT / 2 + 4}" text-anchor="middle">{value}</text>
+  <g fill="#fff" font-family="{FONT_FAMILY}" font-size="{fs}" font-weight="700">
+    <text x="{left_w + value_text_w / 2}" y="{h / 2 + 4}" text-anchor="middle">{value}</text>
   </g>
 </svg>'''
 
 
+# Keep old name as alias
+_render_badge = _render_badge_legacy
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────────
+
+
 @router.get("/badge/{target_id:path}.svg")
-async def get_badge(target_id: str, style: str = "flat"):
-    """Get an SVG quality badge for a target."""
+async def get_badge(target_id: str, style: str = "flat", size: str = "inline"):
+    """Get an SVG quality badge for a target.
+
+    Query params:
+        size: 'inline' (240x80, default) or 'square' (200x200)
+        style: 'legacy' for old Apple-style badge
+    """
     doc = await scores_col().find_one({"target_id": target_id})
 
-    if not doc:
-        svg = _render_badge(0, "unknown")
+    if style == "legacy":
+        # Old Apple-style badge
+        if not doc:
+            svg = _render_badge_legacy(0, "unknown")
+        else:
+            eval_mode = normalize_eval_mode(doc.get("last_eval_mode"))
+            svg = _render_badge_legacy(
+                doc.get("current_score", 0),
+                doc.get("tier", "failed"),
+                eval_mode,
+            )
     else:
-        eval_mode = normalize_eval_mode(doc.get("last_eval_mode"))
-        svg = _render_badge(
-            doc.get("current_score", 0),
-            doc.get("tier", "failed"),
-            eval_mode,
-        )
+        # New Laureum design
+        if not doc:
+            svg = _render_laureum_badge(0, "unknown", size=size)
+        else:
+            score = doc.get("current_score", 0)
+            tier = _score_to_tier(score)
+            eval_mode = normalize_eval_mode(doc.get("last_eval_mode"))
+            evaluated_at = None
+            if doc.get("last_evaluated_at"):
+                evaluated_at = str(doc["last_evaluated_at"])
+            svg = _render_laureum_badge(
+                score, tier, eval_mode, evaluated_at, size=size,
+            )
 
     return Response(
         content=svg,
         media_type="image/svg+xml",
-        headers={"Cache-Control": "no-cache, max-age=300"},
+        headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@router.get("/badge/{target_id:path}/embed")
+async def get_badge_embed(target_id: str):
+    """Get embeddable HTML/Markdown snippets for a badge."""
+    doc = await scores_col().find_one({"target_id": target_id})
+
+    score = 0
+    tier = "unknown"
+    if doc:
+        score = doc.get("current_score", 0)
+        tier = _score_to_tier(score)
+
+    base = settings.base_url.rstrip("/")
+    badge_url = f"{base}/v1/badge/{target_id}.svg"
+    profile_url = f"https://laureum.ai/agent/{target_id}"
+    alt_text = f"Laureum {tier.capitalize()}"
+
+    return JSONResponse({
+        "html": (
+            f"<a href='{profile_url}'>"
+            f"<img src='{badge_url}' alt='{alt_text}' height='80' />"
+            f"</a>"
+        ),
+        "markdown": f"[![{alt_text}]({badge_url})]({profile_url})",
+        "badge_url": badge_url,
+        "tier": tier,
+        "score": score,
+    })
