@@ -49,8 +49,8 @@ class TestRenderBattleCard:
 
     def test_branding_shown(self):
         svg = render_battle_card(self._make_battle_doc())
-        assert "AGENTTRUST" in svg
-        assert "agenttrust.assisterr.ai" in svg
+        assert "LAUREUM" in svg
+        assert "LAUREUM.AI" in svg
 
     @staticmethod
     def _make_battle_doc(
