@@ -1,24 +1,24 @@
 """SVG battle result card renderer (1200x630px OG image format).
 
 Generates shareable battle cards with VS layout, scores,
-winner/loser styling, comparison bars, and AgentTrust branding.
+winner/loser styling, comparison bars, and Laureum branding.
 """
 
 # Card dimensions (OG image standard)
 WIDTH = 1200
 HEIGHT = 630
 
-# Colors
-BG_COLOR = "#0f172a"        # Dark navy background
-ACCENT_COLOR = "#F66824"    # AgentTrust brand orange
-WINNER_COLOR = "#34C759"    # Gold/green for winner
-LOSER_COLOR = "#64748b"     # Muted gray for loser
-DRAW_COLOR = "#007AFF"      # Blue for draw
-PHOTO_FINISH_COLOR = "#f59e0b"  # Amber for photo finish
-TEXT_COLOR = "#f8fafc"       # Light text
-MUTED_TEXT = "#94a3b8"       # Muted text
-BAR_BG = "#1e293b"          # Bar background
-VS_COLOR = "#ef4444"         # Red for VS text
+# Colors — Laureum brand book
+BG_COLOR = "#0E0E0C"        # Near-black (Laureum dark)
+ACCENT_COLOR = "#E2754D"    # Laureum brand orange
+WINNER_COLOR = "#E2754D"    # Brand orange for winner
+LOSER_COLOR = "#535862"     # Muted gray for loser
+DRAW_COLOR = "#717069"      # Neutral gray for draw
+PHOTO_FINISH_COLOR = "#E2754D"  # Brand orange for photo finish
+TEXT_COLOR = "#F5F5F3"       # Off-white text
+MUTED_TEXT = "#717069"       # Muted text
+BAR_BG = "#1a1a18"          # Bar background (dark)
+VS_COLOR = "#535862"         # Muted VS text (not red)
 
 AXES = ["accuracy", "safety", "process_quality", "reliability", "latency", "schema_quality"]
 AXIS_LABELS = {
@@ -92,7 +92,7 @@ def render_battle_card(battle_doc: dict) -> str:
     # Header: AgentTrust branding
     parts.append(
         f'<text x="40" y="50" font-family="system-ui, sans-serif" font-size="16" '
-        f'fill="{ACCENT_COLOR}" font-weight="600" letter-spacing="2">AGENTTRUST BATTLE ARENA</text>'
+        f'fill="{ACCENT_COLOR}" font-weight="600" letter-spacing="3">LAUREUM BATTLE ARENA</text>'
     )
 
     # VS text in center
@@ -156,7 +156,7 @@ def render_battle_card(battle_doc: dict) -> str:
     # AgentTrust footer
     parts.append(
         f'<text x="{WIDTH - 40}" y="{HEIGHT - 25}" font-family="system-ui, sans-serif" '
-        f'font-size="12" fill="{MUTED_TEXT}" text-anchor="end">agenttrust.assisterr.ai</text>'
+        f'font-size="12" fill="{MUTED_TEXT}" text-anchor="end" letter-spacing="1.5">LAUREUM.AI</text>'
     )
 
     parts.append('</svg>')
