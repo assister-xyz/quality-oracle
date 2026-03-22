@@ -19,10 +19,10 @@ router = APIRouter()
 
 LAUREUM_TIER_COLORS = {
     "verified": "#C38133",   # Bronze
-    "certified": "#C0C0C0",  # Silver
-    "audited": "#FFD700",    # Gold
-    "failed": "#555555",     # Gray
-    "unknown": "#555555",    # Gray
+    "certified": "#A8A8A8",  # Silver
+    "audited": "#D4AF37",    # Gold
+    "failed": "#535862",     # Muted gray
+    "unknown": "#535862",    # Muted gray
 }
 
 # Score → tier mapping
@@ -117,37 +117,67 @@ def _render_inline_badge(
     wreath_opacity: float,
     date_label: str,
 ) -> str:
-    """Render inline (240x80) badge."""
-    w, h = 240, 80
+    """Render inline (420x120) badge — premium Laureum design.
 
-    # Score circle parameters
-    cx, cy, r = 40, 40, 22
-    circumference = 2 * 3.14159 * r
-    fill_pct = max(0, min(score, 100)) / 100
-    dash = circumference * fill_pct
-    gap = circumference - dash
+    Matches the frontend LaurelBadge component:
+    - Large score with wreath leaves behind
+    - Tier-colored accent stripe on left
+    - VERIFIED BY LAUREUM.AI branding
+    - Laurel mark on right
+    """
+    w, h = 420, 120
 
-    wreath_svg = _laurel_wreath_paths(color, wreath_opacity)
+    # Wreath leaves behind score
+    wreath_left = f"""<g transform="translate(58, 60)" opacity="{wreath_opacity * 0.5}">
+      <path d="M-2 28 C-8 20, -10 8, -4 -4" stroke="{color}" stroke-width="1.5" fill="none" stroke-linecap="round" opacity="0.4"/>
+      <ellipse cx="-8" cy="22" rx="5" ry="2.5" transform="rotate(-15 -8 22)" fill="{color}" opacity="0.5"/>
+      <ellipse cx="-10" cy="14" rx="4.5" ry="2.2" transform="rotate(-30 -10 14)" fill="{color}" opacity="0.4"/>
+      <ellipse cx="-9" cy="6" rx="4" ry="2" transform="rotate(-45 -9 6)" fill="{color}" opacity="0.3"/>
+      <ellipse cx="-6" cy="-1" rx="3.5" ry="1.8" transform="rotate(-60 -6 -1)" fill="{color}" opacity="0.2"/>
+      <path d="M2 28 C8 20, 10 8, 4 -4" stroke="{color}" stroke-width="1.5" fill="none" stroke-linecap="round" opacity="0.4"/>
+      <ellipse cx="8" cy="22" rx="5" ry="2.5" transform="rotate(15 8 22)" fill="{color}" opacity="0.5"/>
+      <ellipse cx="10" cy="14" rx="4.5" ry="2.2" transform="rotate(30 10 14)" fill="{color}" opacity="0.4"/>
+      <ellipse cx="9" cy="6" rx="4" ry="2" transform="rotate(45 9 6)" fill="{color}" opacity="0.3"/>
+      <ellipse cx="6" cy="-1" rx="3.5" ry="1.8" transform="rotate(60 6 -1)" fill="{color}" opacity="0.2"/>
+    </g>"""
+
+    # Right-side laurel mark
+    laurel_mark = f"""<g transform="translate(382, 60)" opacity="0.2">
+      <path d="M-10 18 C-14 10, -12 0, -4 -8" stroke="{color}" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+      <path d="M10 18 C14 10, 12 0, 4 -8" stroke="{color}" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+      <ellipse cx="-8" cy="12" rx="4" ry="2" transform="rotate(-20 -8 12)" fill="{color}"/>
+      <ellipse cx="-10" cy="4" rx="3.5" ry="1.8" transform="rotate(-40 -10 4)" fill="{color}"/>
+      <ellipse cx="8" cy="12" rx="4" ry="2" transform="rotate(20 8 12)" fill="{color}"/>
+      <ellipse cx="10" cy="4" rx="3.5" ry="1.8" transform="rotate(40 10 4)" fill="{color}"/>
+      <circle cx="0" cy="-10" r="2.5" fill="{color}"/>
+    </g>"""
+
+    score_detail = f"{score}/100  ·  {tier_label} TIER"
 
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img" aria-label="Laureum: {score}/100 {tier}">
   <title>Laureum {tier_label}: {score}/100</title>
-  <rect width="{w}" height="{h}" rx="8" fill="#0E0E0C"/>
-  <!-- Score circle -->
-  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#333" stroke-width="3"/>
-  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="3"
-    stroke-dasharray="{dash:.1f} {gap:.1f}" stroke-linecap="round"
-    transform="rotate(-90 {cx} {cy})"/>
-  <text x="{cx}" y="{cy + 5}" text-anchor="middle" fill="#fff"
-    font-family="{FONT_FAMILY}" font-size="16" font-weight="700">{score}</text>
-  <!-- Laurel wreath -->
-  {wreath_svg}
-  <!-- Text section -->
-  <text x="90" y="28" fill="{color}" font-family="{FONT_FAMILY}"
-    font-size="14" font-weight="700" letter-spacing="1.5">{tier_label}</text>
-  <text x="90" y="48" fill="#999" font-family="{FONT_FAMILY}"
-    font-size="10" font-weight="500" letter-spacing="0.8">LAUREUM.AI</text>
-  <text x="90" y="65" fill="#666" font-family="{FONT_FAMILY}"
-    font-size="9">{date_label}</text>
+  <rect width="{w}" height="{h}" rx="4" fill="#0E0E0C"/>
+  <rect width="{w}" height="{h}" rx="4" fill="none" stroke="{color}" stroke-width="1" opacity="0.25"/>
+  <!-- Left accent stripe -->
+  <rect x="0" y="0" width="4" height="{h}" rx="2" fill="{color}" opacity="0.7"/>
+  <!-- Wreath behind score -->
+  {wreath_left}
+  <!-- Score -->
+  <text x="58" y="65" text-anchor="middle" fill="{color}"
+    font-family="{FONT_FAMILY}" font-size="36" font-weight="900">{score}</text>
+  <!-- Divider -->
+  <line x1="110" y1="24" x2="110" y2="96" stroke="{color}" stroke-width="1" opacity="0.2"/>
+  <!-- Tier label -->
+  <text x="128" y="42" fill="#F5F5F3" font-family="{FONT_FAMILY}"
+    font-size="22" font-weight="800" letter-spacing="0.06em">{tier_label}</text>
+  <!-- Score detail -->
+  <text x="128" y="66" fill="{color}" font-family="{FONT_FAMILY}"
+    font-size="13" font-weight="600" letter-spacing="0.06em">{score_detail}</text>
+  <!-- Brand -->
+  <text x="128" y="90" fill="#535862" font-family="{FONT_FAMILY}"
+    font-size="10" font-weight="600" letter-spacing="0.2em">VERIFIED BY LAUREUM.AI</text>
+  <!-- Laurel mark -->
+  {laurel_mark}
 </svg>'''
 
 
