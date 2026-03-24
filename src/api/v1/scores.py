@@ -59,6 +59,7 @@ async def get_score(
         last_evaluated_at=doc.get("last_evaluated_at"),
         tool_scores=parsed_tool_scores,
         last_eval_mode=normalize_eval_mode(doc.get("last_eval_mode")),
+        manifest_hash=doc.get("manifest_hash"),
     )
 
     # Cache for 5 min
@@ -113,6 +114,7 @@ async def list_scores(
             "latency_stats": doc.get("latency_stats", {}),
             "duration_ms": doc.get("duration_ms"),
             "last_eval_mode": normalize_eval_mode(doc.get("last_eval_mode")),
+            "manifest_hash": doc.get("manifest_hash"),
         })
 
     total = await scores_col().count_documents(query)
