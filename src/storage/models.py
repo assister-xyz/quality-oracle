@@ -92,6 +92,7 @@ class ScoreResponse(BaseModel):
     last_evaluated_at: Optional[datetime] = None
     attestation_url: Optional[str] = None
     last_eval_mode: Optional[str] = None
+    manifest_hash: Optional[str] = None
 
 
 class EvaluationStatus(BaseModel):

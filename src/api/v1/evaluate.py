@@ -364,10 +364,14 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             )
             return
 
+        # Compute manifest hash for code integrity tracking (QO-029)
+        from src.core.quick_scan import _hash_manifest
+        manifest_hash = _hash_manifest(manifest.get("tools", []))
+
         # Store manifest in evaluation doc
         await evaluations_col().update_one(
             {"_id": evaluation_id},
-            {"$set": {"target_manifest": manifest}},
+            {"$set": {"target_manifest": manifest, "manifest_hash": manifest_hash}},
         )
 
         # Step 2: Level 1 — Manifest validation
@@ -689,6 +693,7 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                     "last_token_usage": scores.get("token_usage"),
                     "last_cost_usd": scores.get("cost_usd"),
                     "gaming_risk": gaming_risk_data.get("level") if gaming_risk_data else None,
+                    "manifest_hash": manifest_hash,
                 },
                 "$inc": {"evaluation_count": 1},
                 "$setOnInsert": {"first_evaluated_at": now},
