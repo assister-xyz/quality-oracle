@@ -220,7 +220,7 @@ async def get_evaluation_status(
             score=score,
             tier=QualityTier(tier),
             confidence=scores.get("confidence", 0),
-            domains=doc.get("domains", []),
+            domains=doc.get("detected_domains", doc.get("domains", [])),
             evaluation_version=doc.get("evaluation_version"),
         )
 
@@ -368,10 +368,27 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         from src.core.quick_scan import _hash_manifest
         manifest_hash = _hash_manifest(manifest.get("tools", []))
 
+        # Auto-detect domain from tool manifest (QO-027)
+        from src.core.domain_detection import detect_domain_with_confidence, detect_all_domains, DOMAIN_CONFIDENCE_THRESHOLD
+        detected_domain, domain_confidence = detect_domain_with_confidence(manifest.get("tools", []))
+        detected_domains = detect_all_domains(manifest.get("tools", []))
+        # Use "general" weights if confidence is too low to avoid bad weight adjustments
+        scoring_domain = detected_domain if domain_confidence >= DOMAIN_CONFIDENCE_THRESHOLD else "general"
+        logger.info(
+            f"[{evaluation_id[:8]}] Domain: {detected_domain} (confidence={domain_confidence}, "
+            f"scoring_as={scoring_domain}, all={detected_domains})"
+        )
+
         # Store manifest in evaluation doc
         await evaluations_col().update_one(
             {"_id": evaluation_id},
-            {"$set": {"target_manifest": manifest, "manifest_hash": manifest_hash}},
+            {"$set": {
+                "target_manifest": manifest,
+                "manifest_hash": manifest_hash,
+                "detected_domain": detected_domain,
+                "detected_domains": detected_domains,
+                "domain_confidence": domain_confidence,
+            }},
         )
 
         # Step 2: Level 1 — Manifest validation
@@ -440,6 +457,7 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 run_safety=mode_config.run_safety_probes,
                 run_consistency=mode_config.run_consistency_check,
                 progress_cb=progress_cb,
+                detected_domain=scoring_domain,
             )
 
             await evaluations_col().update_one(
@@ -694,6 +712,8 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                     "last_cost_usd": scores.get("cost_usd"),
                     "gaming_risk": gaming_risk_data.get("level") if gaming_risk_data else None,
                     "manifest_hash": manifest_hash,
+                    "detected_domain": detected_domain,
+                    "detected_domains": detected_domains,
                 },
                 "$inc": {"evaluation_count": 1},
                 "$setOnInsert": {"first_evaluated_at": now},

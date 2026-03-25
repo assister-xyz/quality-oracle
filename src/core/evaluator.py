@@ -804,6 +804,7 @@ class Evaluator:
         run_safety: bool = True,
         run_consistency: bool = True,
         progress_cb: Optional[Any] = None,
+        detected_domain: str = "general",
     ) -> EvaluationResult:
         """
         Full multi-dimensional evaluation (6 axes).
@@ -922,14 +923,20 @@ class Evaluator:
             except Exception as e:
                 logger.warning(f"Consistency check failed for {target_id}: {e}")
 
-        # Multi-dimensional aggregate (6 axes, weighted)
+        # Multi-dimensional aggregate (6 axes, domain-weighted — QO-027)
+        from src.core.domain_detection import get_domain_weights
+        domain_weights = get_domain_weights(detected_domain)
+        axis_scores = {
+            "accuracy": accuracy_score,
+            "safety": safety_score,
+            "process_quality": process_quality_score,
+            "reliability": reliability_score,
+            "latency": latency_score,
+            "schema_quality": schema_score,
+        }
         dimensions = {
-            "accuracy": {"score": accuracy_score, "weight": 0.35},
-            "safety": {"score": safety_score, "weight": 0.20},
-            "process_quality": {"score": process_quality_score, "weight": 0.10},
-            "reliability": {"score": reliability_score, "weight": 0.15},
-            "latency": {"score": latency_score, "weight": 0.10},
-            "schema_quality": {"score": schema_score, "weight": 0.10},
+            axis: {"score": axis_scores[axis], "weight": domain_weights[axis]}
+            for axis in axis_scores
         }
         result.dimensions = dimensions
 
@@ -938,6 +945,8 @@ class Evaluator:
         )
         result.overall_score = int(round(weighted_total))
         result.tier = determine_tier(result.overall_score)
+        logger.info(f"[evaluate_full] Domain weights applied: domain={detected_domain}, "
+                     f"weights={domain_weights}")
 
         # Recompute result hash with new overall score
         hash_data = f"{target_id}:{result.overall_score}:{result.questions_asked}:{int(time.time())}"
