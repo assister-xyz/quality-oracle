@@ -1,9 +1,11 @@
 """Tests for domain auto-detection (QO-027)."""
 from src.core.domain_detection import (
     detect_domain,
+    detect_domain_with_confidence,
     detect_all_domains,
     get_domain_weights,
     DOMAIN_WEIGHTS,
+    DOMAIN_CONFIDENCE_THRESHOLD,
 )
 
 
@@ -86,6 +88,35 @@ class TestDetectAllDomains:
         domains = detect_all_domains(tools, threshold=2)
         # Security should be first (more keyword matches)
         assert domains[0] == "security"
+
+
+class TestDetectDomainWithConfidence:
+    def test_strong_match_high_confidence(self):
+        tools = [{"name": "swap_tokens", "description": "Swap DeFi tokens on Solana exchange with best price"}]
+        domain, conf = detect_domain_with_confidence(tools)
+        assert domain == "finance"
+        assert conf >= 0.5
+
+    def test_weak_match_lower_confidence(self):
+        # Single generic keyword match → moderate confidence at best
+        tools = [{"name": "foo", "description": "Does something"}]
+        domain, conf = detect_domain_with_confidence(tools)
+        assert conf == 0.0  # no keywords match at all
+
+    def test_empty_tools_zero_confidence(self):
+        domain, conf = detect_domain_with_confidence([])
+        assert domain == "general"
+        assert conf == 0.0
+
+    def test_ambiguous_match_lower_confidence(self):
+        # "search" + "data" keywords both present
+        tools = [{"name": "search_database", "description": "Search and query data from SQL database"}]
+        domain, conf = detect_domain_with_confidence(tools)
+        # Should have lower confidence due to ambiguity
+        assert conf < 0.8
+
+    def test_confidence_threshold_exists(self):
+        assert 0.0 < DOMAIN_CONFIDENCE_THRESHOLD < 1.0
 
 
 class TestGetDomainWeights:

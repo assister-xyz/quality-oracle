@@ -369,10 +369,15 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         manifest_hash = _hash_manifest(manifest.get("tools", []))
 
         # Auto-detect domain from tool manifest (QO-027)
-        from src.core.domain_detection import detect_domain, detect_all_domains
-        detected_domain = detect_domain(manifest.get("tools", []))
+        from src.core.domain_detection import detect_domain_with_confidence, detect_all_domains, DOMAIN_CONFIDENCE_THRESHOLD
+        detected_domain, domain_confidence = detect_domain_with_confidence(manifest.get("tools", []))
         detected_domains = detect_all_domains(manifest.get("tools", []))
-        logger.info(f"[{evaluation_id[:8]}] Domain detected: {detected_domain} (all: {detected_domains})")
+        # Use "general" weights if confidence is too low to avoid bad weight adjustments
+        scoring_domain = detected_domain if domain_confidence >= DOMAIN_CONFIDENCE_THRESHOLD else "general"
+        logger.info(
+            f"[{evaluation_id[:8]}] Domain: {detected_domain} (confidence={domain_confidence}, "
+            f"scoring_as={scoring_domain}, all={detected_domains})"
+        )
 
         # Store manifest in evaluation doc
         await evaluations_col().update_one(
@@ -382,6 +387,7 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 "manifest_hash": manifest_hash,
                 "detected_domain": detected_domain,
                 "detected_domains": detected_domains,
+                "domain_confidence": domain_confidence,
             }},
         )
 
@@ -451,6 +457,7 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 run_safety=mode_config.run_safety_probes,
                 run_consistency=mode_config.run_consistency_check,
                 progress_cb=progress_cb,
+                detected_domain=scoring_domain,
             )
 
             await evaluations_col().update_one(
