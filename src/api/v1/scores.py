@@ -91,6 +91,8 @@ async def list_scores(
         query["current_score"] = {"$gte": min_score}
     if tier:
         query["tier"] = tier
+    if domain:
+        query["detected_domain"] = domain
 
     sort_field = {"score": "current_score", "date": "last_evaluated_at", "name": "target_id"}
     sort_key = sort_field.get(sort, "current_score")
@@ -115,6 +117,8 @@ async def list_scores(
             "duration_ms": doc.get("duration_ms"),
             "last_eval_mode": normalize_eval_mode(doc.get("last_eval_mode")),
             "manifest_hash": doc.get("manifest_hash"),
+            "detected_domain": doc.get("detected_domain", "general"),
+            "detected_domains": doc.get("detected_domains", []),
         })
 
     total = await scores_col().count_documents(query)

@@ -40,6 +40,8 @@ class ScanResponse(BaseModel):
     estimated_tier: str
     safety_quick_check: dict
     manifest_hash: str
+    detected_domain: str
+    detected_domains: list
     scan_time_ms: int
     error: str | None = None
     recommendation: str
@@ -111,8 +113,9 @@ async def scan_mcp_server(request: Request, body: ScanRequest):
             tool_count=0, tools=[], manifest_score=0,
             estimated_tier="failed",
             safety_quick_check=SafetyQuickCheck(False, 0),
-            manifest_hash="", scan_time_ms=0,
-            error=f"Could not connect: {str(e)[:200]}",
+            manifest_hash="",
+            detected_domain="unknown", detected_domains=[],
+            scan_time_ms=0, error=f"Could not connect: {str(e)[:200]}",
         )
 
     # Build recommendation
@@ -140,6 +143,8 @@ async def scan_mcp_server(request: Request, body: ScanRequest):
         estimated_tier=result.estimated_tier,
         safety_quick_check=asdict(result.safety_quick_check),
         manifest_hash=result.manifest_hash,
+        detected_domain=result.detected_domain,
+        detected_domains=result.detected_domains,
         scan_time_ms=result.scan_time_ms,
         error=result.error,
         recommendation=recommendation,

@@ -55,6 +55,8 @@ class QuickScanResult:
     estimated_tier: str
     safety_quick_check: SafetyQuickCheck
     manifest_hash: str
+    detected_domain: str
+    detected_domains: List[str]
     scan_time_ms: int
     error: Optional[str] = None
 
@@ -181,6 +183,8 @@ async def quick_scan(url: str) -> QuickScanResult:
                 suspicious_descriptions=0,
             ),
             manifest_hash="",
+            detected_domain="unknown",
+            detected_domains=[],
             scan_time_ms=elapsed,
             error=error_msg,
         )
@@ -213,6 +217,11 @@ async def quick_scan(url: str) -> QuickScanResult:
     # Estimate tier
     estimated_tier = determine_tier(manifest_score)
 
+    # Auto-detect domain (QO-027)
+    from src.core.domain_detection import detect_domain, detect_all_domains
+    detected_domain = detect_domain(tools)
+    detected_domains = detect_all_domains(tools)
+
     elapsed = int((time.time() - start) * 1000)
 
     return QuickScanResult(
@@ -225,5 +234,7 @@ async def quick_scan(url: str) -> QuickScanResult:
         estimated_tier=estimated_tier,
         safety_quick_check=safety,
         manifest_hash=manifest_hash,
+        detected_domain=detected_domain,
+        detected_domains=detected_domains,
         scan_time_ms=elapsed,
     )
