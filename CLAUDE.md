@@ -1,4 +1,4 @@
-# AgentTrust (Quality Oracle)
+# Laureum.ai (Quality Oracle)
 
 > Part of **assisterr-workflow**. See `../assisterr-workflow/CLAUDE.md` for full workflow, sizing, spec lifecycle, memory entities, and agent routing.
 
@@ -6,7 +6,7 @@
 
 - **Port:** 8002
 - **Stack:** FastAPI + Motor (MongoDB) + Redis
-- **Brand:** AgentTrust (standard: AQVC — Agent Quality Verifiable Credential)
+- **Brand:** Laureum.ai (standard: AQVC — Agent Quality Verifiable Credential)
 - **MongoDB prefix:** `quality__` (collections: evaluations, scores, score_history, attestations, question_banks, api_keys)
 - **Redis prefix:** `qo:` (score cache, badge cache, attestation verify cache, rate limits)
 - **LLM Judge:** Multi-provider (Cerebras, Groq, Gemini, DeepSeek, OpenAI, OpenRouter, Mistral) with ConsensusJudge (2-judge parallel + tiebreaker)
