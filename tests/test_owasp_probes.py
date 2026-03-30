@@ -414,6 +414,7 @@ class TestProbeGeneration:
              "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}}},
         ]
         probes = _generate_probes(tools)
-        # Should be manageable — not N×15 explosion
-        assert len(probes) <= 40, f"Too many probes: {len(probes)}"
+        # With multi-payload attack bank (3 payloads x 3 variants per type),
+        # probe count increases but stays manageable
+        assert len(probes) <= 200, f"Too many probes: {len(probes)}"
         assert len(probes) >= 10, f"Too few probes: {len(probes)}"
