@@ -502,6 +502,6 @@ class TestQO035ProbeGeneration:
              "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}}},
         ]
         probes = _generate_probes(tools)
-        # Was 10-40, now with 3 new probes should still be reasonable
-        assert len(probes) <= 50, f"Too many probes: {len(probes)}"
+        # Was 10-40, now with QO-035 + QO-036 probes should still be reasonable
+        assert len(probes) <= 60, f"Too many probes: {len(probes)}"
         assert len(probes) >= 10, f"Too few probes: {len(probes)}"
