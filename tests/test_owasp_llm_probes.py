@@ -428,6 +428,7 @@ class TestQO036ProbeGeneration:
              "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}}},
         ]
         probes = _generate_probes(tools)
-        # With QO-036, a few more probes but still manageable
-        assert len(probes) <= 60, f"Too many probes: {len(probes)}"
+        # With multi-payload attack bank (3 payloads x 3 variants per type),
+        # probe count increases but stays manageable
+        assert len(probes) <= 200, f"Too many probes: {len(probes)}"
         assert len(probes) >= 10, f"Too few probes: {len(probes)}"

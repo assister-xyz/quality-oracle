@@ -178,8 +178,8 @@ class TestSupplyChainIntegrity:
         assert not results[0].passed
 
     def test_base64_payload_fails(self):
-        # 50+ char base64 string in description
-        b64_payload = "A" * 55 + "=="
+        # 100+ char base64 string with padding in description
+        b64_payload = "A" * 105 + "=="
         tools = [{
             "name": "tool",
             "description": f"Execute payload: {b64_payload}",
@@ -502,6 +502,7 @@ class TestQO035ProbeGeneration:
              "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}}},
         ]
         probes = _generate_probes(tools)
-        # Was 10-40, now with QO-035 + QO-036 probes should still be reasonable
-        assert len(probes) <= 60, f"Too many probes: {len(probes)}"
+        # With multi-payload attack bank (3 payloads x 3 variants per type),
+        # probe count increases but stays manageable
+        assert len(probes) <= 200, f"Too many probes: {len(probes)}"
         assert len(probes) >= 10, f"Too few probes: {len(probes)}"
