@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     solana_cluster: str = "devnet"
 
     # CORS
-    cors_origins: List[str] = ["http://localhost:3000"]
+    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:3001", "http://localhost:3003", "http://localhost:3004"]
 
     # Evaluation defaults
     default_eval_level: int = 2
