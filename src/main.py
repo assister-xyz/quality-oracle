@@ -21,6 +21,7 @@ from src.api.v1.aiuc1 import router as aiuc1_router
 from src.api.v1.irt import router as irt_router
 from src.api.v1.costs import router as costs_router
 from src.api.v1.scan import router as scan_router
+from src.api.v1.admin import router as admin_router
 from src.api.agent_card import router as agent_card_router
 from src.storage.mongodb import connect_db, close_db
 from src.storage.cache import connect_redis, close_redis
@@ -96,6 +97,7 @@ app.include_router(aiuc1_router, prefix="/v1", tags=["aiuc1"])
 app.include_router(irt_router, prefix="/v1", tags=["irt"])
 app.include_router(costs_router, prefix="/v1", tags=["costs"])
 app.include_router(scan_router, prefix="/v1", tags=["scan"])
+app.include_router(admin_router, prefix="/v1", tags=["admin"])
 app.include_router(agent_card_router, tags=["a2a"])
 
 
