@@ -285,6 +285,41 @@ _render_badge = _render_badge_legacy
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
+@router.get("/shields/{target_id:path}.json")
+async def get_shields_badge(target_id: str):
+    """Get shields.io-compatible JSON badge for a target.
+
+    Usage: ![Laureum](https://img.shields.io/endpoint?url=https://laureum.ai/api/v1/shields/{target_id}.json)
+    """
+    doc = await scores_col().find_one({"target_id": target_id})
+
+    if not doc:
+        return JSONResponse(
+            {
+                "schemaVersion": 1,
+                "label": "Laureum",
+                "message": "not evaluated",
+                "color": "gray",
+            },
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    score = doc.get("current_score", 0)
+    tier = _score_to_tier(score)
+    tier_label = tier.capitalize()
+    color = LAUREUM_TIER_COLORS.get(tier, LAUREUM_TIER_COLORS["unknown"])
+
+    return JSONResponse(
+        {
+            "schemaVersion": 1,
+            "label": "Laureum",
+            "message": f"{score}/100 {tier_label}",
+            "color": color.lstrip("#"),
+        },
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @router.get("/badge/{target_id:path}.svg")
 async def get_badge(target_id: str, style: str = "flat", size: str = "inline"):
     """Get an SVG quality badge for a target.

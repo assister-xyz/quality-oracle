@@ -14,6 +14,109 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/score/{target_id:path}/share")
+async def get_share_data(
+    target_id: str,
+    response: Response,
+    api_key_doc: dict = Depends(get_api_key),
+):
+    """Get pre-formatted share data for social media sharing.
+
+    Returns tweet text, LinkedIn text, OG image URL, permalink,
+    percentile, and shields.io badge data.
+    """
+    tier = api_key_doc.get("tier", "free")
+    key_hash = api_key_doc["_id"]
+    allowed, remaining, limit = await check_score_lookup_limit(key_hash, tier)
+    add_rate_limit_headers(response, tier, limit, remaining)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Score lookup rate limit exceeded")
+
+    doc = await scores_col().find_one({"target_id": target_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="No quality score found for this target")
+
+    score = doc.get("current_score", 0)
+    score_tier = doc.get("tier", "failed")
+
+    # Compute percentile
+    total = await scores_col().count_documents({})
+    lower = await scores_col().count_documents({"current_score": {"$lt": score}})
+    percentile = round((lower / total) * 100) if total > 0 else 0
+    top_pct = max(1, 100 - percentile)
+
+    # Infer name from target_id (URL)
+    name = target_id
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(target_id)
+        hostname = parsed.hostname or target_id
+        name = (hostname
+                .replace("mcp.", "")
+                .replace("docs.", "")
+                .replace("www.", "")
+                .split(".")[0]
+                .capitalize())
+    except Exception:
+        pass
+
+    # URLs
+    from src.config import settings
+    base = settings.base_url.rstrip("/")
+    profile_url = f"https://laureum.ai/agent/{target_id}"
+    og_image_url = f"https://laureum.ai/api/og?id={target_id}"
+    badge_svg_url = f"{base}/v1/badge/{target_id}.svg"
+    shields_url = f"{base}/v1/shields/{target_id}.json"
+
+    # Pre-formatted social text
+    tier_label = score_tier.capitalize() if score_tier != "failed" else "Evaluated"
+    tweet = (
+        f"My MCP server scored {score}/100 on @LaureumAI "
+        f"- Top {top_pct}%! "
+        f"Evaluate yours: {profile_url}"
+    )
+    linkedin = (
+        f"Just verified my AI agent with Laureum.ai - "
+        f"scored {score}/100 ({tier_label}), placing in the Top {top_pct}% "
+        f"of evaluated MCP servers.\n\n"
+        f"Laureum provides multi-judge consensus scoring across 6 quality dimensions "
+        f"with signed attestations.\n\n"
+        f"Evaluate your agent: {profile_url}"
+    )
+
+    return {
+        "target_id": target_id,
+        "name": name,
+        "score": score,
+        "tier": score_tier,
+        "percentile": percentile,
+        "top_pct": top_pct,
+        "total_evaluated": total,
+        "tweet_text": tweet,
+        "linkedin_text": linkedin,
+        "profile_url": profile_url,
+        "og_image_url": og_image_url,
+        "badge_svg_url": badge_svg_url,
+        "shields_url": shields_url,
+        "shields_badge": {
+            "schemaVersion": 1,
+            "label": "Laureum",
+            "message": f"{score}/100 {tier_label}",
+            "color": {
+                "audited": "D4AF37",
+                "certified": "A8A8A8",
+                "verified": "C38133",
+            }.get(score_tier, "535862"),
+        },
+        "embed_markdown": f"[![Laureum {tier_label}]({badge_svg_url})]({profile_url})",
+        "embed_html": (
+            f"<a href='{profile_url}'>"
+            f"<img src='{badge_svg_url}' alt='Laureum {tier_label}' height='80' />"
+            f"</a>"
+        ),
+    }
+
+
 @router.get("/score/{target_id:path}", response_model=ScoreResponse)
 async def get_score(
     target_id: str,

@@ -142,6 +142,10 @@ def test_client(mock_api_key_doc):
         patch("src.storage.cache.cache_badge", new_callable=AsyncMock),
         patch("src.api.v1.attestations.get_cached_attestation_verify", new_callable=AsyncMock, return_value=None),
         patch("src.api.v1.attestations.cache_attestation_verify", new_callable=AsyncMock),
+        # Stats & OG endpoints
+        patch("src.api.v1.stats.scores_col", return_value=mock_col),
+        patch("src.api.v1.og.scores_col", return_value=mock_col),
+        patch("src.api.v1.og.get_redis", return_value=MagicMock(get=AsyncMock(return_value=None), set=AsyncMock())),
         # Rate limiting — patch where imported in rate_limiter module
         patch("src.auth.rate_limiter.check_rate_limit", new_callable=AsyncMock, return_value=(True, 99, 100)),
         # Lifecycle
