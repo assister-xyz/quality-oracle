@@ -1,9 +1,11 @@
-"""Admin endpoints — import scores, manage data."""
+"""Admin endpoints — import scores, manage data, batch evaluation."""
+import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from src.storage.mongodb import scores_col
@@ -11,6 +13,9 @@ from src.auth.dependencies import get_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# In-memory batch job tracker (simple; production would use Redis/DB)
+_batch_jobs: dict = {}
 
 
 class ScoreImport(BaseModel):
@@ -83,3 +88,207 @@ async def import_scores(
         "errors": errors,
         "total_scores": await scores_col().count_documents({}),
     }
+
+
+# ── Batch Evaluation ────────────────────────────────────────────────────────
+
+
+class BatchEvaluateRequest(BaseModel):
+    urls: List[str]
+    level: int = 2
+    force: bool = False
+
+
+class BatchJobStatus(BaseModel):
+    job_id: str
+    status: str
+    total: int
+    completed: int
+    succeeded: int
+    failed: int
+    skipped: int
+    results: Optional[list] = None
+
+
+@router.post("/admin/batch-evaluate")
+async def batch_evaluate(
+    req: BatchEvaluateRequest,
+    background_tasks: BackgroundTasks,
+    api_key_doc: dict = Depends(get_api_key),
+):
+    """Trigger batch evaluation of multiple MCP servers.
+
+    Runs evaluations in background. Returns job_id for progress tracking.
+    Requires marketplace-tier API key.
+    """
+    tier = api_key_doc.get("tier", "free")
+    if tier != "marketplace":
+        raise HTTPException(403, "Admin endpoints require marketplace-tier API key")
+
+    if not req.urls:
+        raise HTTPException(400, "urls list cannot be empty")
+
+    if len(req.urls) > 200:
+        raise HTTPException(400, "Maximum 200 URLs per batch")
+
+    job_id = str(uuid4())
+    _batch_jobs[job_id] = {
+        "status": "running",
+        "total": len(req.urls),
+        "completed": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "skipped": 0,
+        "results": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    background_tasks.add_task(
+        _run_batch_evaluation, job_id, req.urls, req.level, req.force
+    )
+
+    return {"job_id": job_id, "total": len(req.urls), "status": "running"}
+
+
+@router.get("/admin/batch-evaluate/{job_id}")
+async def get_batch_status(
+    job_id: str,
+    api_key_doc: dict = Depends(get_api_key),
+):
+    """Check progress of a batch evaluation job."""
+    tier = api_key_doc.get("tier", "free")
+    if tier != "marketplace":
+        raise HTTPException(403, "Admin endpoints require marketplace-tier API key")
+
+    job = _batch_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Batch job not found")
+
+    return BatchJobStatus(
+        job_id=job_id,
+        status=job["status"],
+        total=job["total"],
+        completed=job["completed"],
+        succeeded=job["succeeded"],
+        failed=job["failed"],
+        skipped=job["skipped"],
+        results=job["results"] if job["status"] == "completed" else None,
+    )
+
+
+async def _run_batch_evaluation(
+    job_id: str, urls: list, level: int, force: bool
+):
+    """Run batch evaluations in background."""
+    from src.core.mcp_client import get_server_manifest, evaluate_server
+    from src.core.evaluator import Evaluator
+    from src.core.llm_judge import LLMJudge
+    from src.core.quick_scan import quick_scan
+    from src.config import settings
+
+    job = _batch_jobs[job_id]
+
+    # Create judge
+    judge = LLMJudge(
+        api_key=settings.cerebras_api_key or None,
+        model=settings.cerebras_model,
+        provider="cerebras",
+        base_url=settings.cerebras_base_url,
+        fallback_key=settings.groq_api_key or None,
+        fallback_model=settings.groq_model,
+        fallback_provider="groq",
+        fallback2_key=settings.openrouter_api_key or None,
+        fallback2_model=settings.openrouter_model,
+        fallback2_provider="openrouter",
+    )
+
+    for url in urls:
+        result = {"url": url, "status": "pending", "score": None, "tier": None, "error": None}
+
+        try:
+            # Skip already scored unless force
+            if not force:
+                existing = await scores_col().find_one({"target_id": url})
+                if existing:
+                    result["status"] = "skipped"
+                    result["score"] = existing.get("current_score")
+                    result["tier"] = existing.get("tier")
+                    job["skipped"] += 1
+                    job["completed"] += 1
+                    job["results"].append(result)
+                    continue
+
+            if level == 1:
+                # L1 quick scan
+                scan_result = await quick_scan(url)
+                result["status"] = "success" if scan_result.reachable else "error"
+                result["score"] = scan_result.manifest_score
+                result["tier"] = scan_result.estimated_tier
+                if not scan_result.reachable:
+                    result["error"] = scan_result.error
+                    job["failed"] += 1
+                else:
+                    job["succeeded"] += 1
+            else:
+                # L2 functional eval
+                manifest = await get_server_manifest(url)
+                tool_responses = await evaluate_server(url)
+
+                evaluator = Evaluator(llm_judge=judge)
+                eval_result = await evaluator.evaluate_full(
+                    target_id=url,
+                    server_url=url,
+                    tool_responses=tool_responses,
+                    manifest=manifest,
+                    run_safety=True,
+                )
+
+                result["status"] = "success"
+                result["score"] = eval_result.overall_score
+                result["tier"] = eval_result.tier
+
+                # Save to DB
+                now = datetime.now(timezone.utc)
+                dimensions = {}
+                if eval_result.dimensions:
+                    dimensions = {k: v["score"] for k, v in eval_result.dimensions.items()}
+
+                await scores_col().update_one(
+                    {"target_id": url},
+                    {
+                        "$set": {
+                            "target_id": url,
+                            "target_type": "mcp_server",
+                            "current_score": eval_result.overall_score,
+                            "tier": eval_result.tier,
+                            "confidence": eval_result.confidence,
+                            "evaluation_version": "v1.0",
+                            "last_evaluated_at": now,
+                            "tool_scores": eval_result.tool_scores,
+                            "dimensions": dimensions,
+                            "source": "batch_api",
+                        },
+                        "$inc": {"evaluation_count": 1},
+                        "$setOnInsert": {"first_evaluated_at": now},
+                    },
+                    upsert=True,
+                )
+                job["succeeded"] += 1
+
+        except Exception as e:
+            result["status"] = "error"
+            result["error"] = str(e)[:300]
+            job["failed"] += 1
+            logger.error(f"Batch eval failed for {url}: {e}")
+
+        job["completed"] += 1
+        job["results"].append(result)
+
+        # Rate limit between evaluations
+        await asyncio.sleep(2.5)
+
+    job["status"] = "completed"
+    logger.info(
+        f"Batch job {job_id} completed: "
+        f"{job['succeeded']} ok, {job['failed']} failed, {job['skipped']} skipped"
+    )
