@@ -746,6 +746,22 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
 
         logger.info(f"Evaluation {evaluation_id} completed: score={scores['overall_score']}")
 
+        # ── On-chain posting (ERC-8004 + EAS) — async, best-effort ──────
+        if settings.erc8004_enabled or settings.eas_enabled:
+            try:
+                from src.onchain.hook import post_evaluation_onchain
+                await post_evaluation_onchain(
+                    evaluation_id=evaluation_id,
+                    target_url=request.target_url,
+                    score=scores.get("overall_score", 0),
+                    tier=scores.get("tier", "failed"),
+                    dimensions=scores.get("dimensions", {}),
+                    attestation_jwt=attestation.get("attestation_jwt"),
+                    erc8004_agent_id=request.erc8004_agent_id if hasattr(request, "erc8004_agent_id") else None,
+                )
+            except Exception as e:
+                logger.warning(f"[{evaluation_id[:8]}] On-chain posting failed (non-fatal): {e}")
+
         # Deliver webhook if configured
         webhook_url = request.webhook_url
         if webhook_url:

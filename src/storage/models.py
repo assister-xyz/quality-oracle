@@ -62,6 +62,7 @@ class EvaluateRequest(BaseModel):
     eval_mode: EvalMode = EvalMode.CERTIFIED
     webhook_url: Optional[str] = None
     callback_secret: Optional[str] = None
+    erc8004_agent_id: Optional[int] = None  # ERC-8004 agent token ID for on-chain reputation
 
 
 # Response models
