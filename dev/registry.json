@@ -1,23 +1,7 @@
 {
-  "version": "1.0",
-  "last_updated": "2026-03-31",
+  "version": "2.0",
+  "last_updated": "2026-04-03",
   "servers": [
-    {
-      "url": "https://docs.mcp.cloudflare.com/sse",
-      "name": "Cloudflare Docs",
-      "transport": "sse",
-      "category": "developer_tools",
-      "requires_auth": false,
-      "source": "verified_working"
-    },
-    {
-      "url": "https://mcp.tweetsave.org/sse",
-      "name": "TweetSave",
-      "transport": "sse",
-      "category": "social_media",
-      "requires_auth": false,
-      "source": "verified_working"
-    },
     {
       "url": "https://mcp.deepwiki.com/mcp",
       "name": "DeepWiki",
@@ -51,26 +35,10 @@
       "source": "verified_working"
     },
     {
-      "url": "https://docs.astro.build/mcp",
-      "name": "Astro Docs",
+      "url": "https://api.manifold.markets/v0/mcp",
+      "name": "Manifold Markets",
       "transport": "streamable_http",
-      "category": "developer_tools",
-      "requires_auth": false,
-      "source": "verified_working"
-    },
-    {
-      "url": "https://api.find-a.domain/mcp",
-      "name": "Find-A-Domain",
-      "transport": "streamable_http",
-      "category": "utilities",
-      "requires_auth": false,
-      "source": "verified_working"
-    },
-    {
-      "url": "https://mcp.openzeppelin.com/mcp",
-      "name": "OpenZeppelin",
-      "transport": "streamable_http",
-      "category": "blockchain",
+      "category": "finance",
       "requires_auth": false,
       "source": "verified_working"
     },
@@ -83,50 +51,178 @@
       "source": "verified_working"
     },
     {
-      "url": "https://api.manifold.markets/v0/mcp",
-      "name": "Manifold",
+      "url": "https://mcp.exa.ai/mcp",
+      "name": "Exa Search",
       "transport": "streamable_http",
-      "category": "finance",
+      "category": "search",
       "requires_auth": false,
-      "source": "verified_working"
+      "source": "jaw9c_list"
     },
     {
-      "url": "https://mcp.subwayinfo.nyc/mcp",
+      "url": "https://knowledge-mcp.global.api.aws",
+      "name": "AWS Knowledge",
+      "transport": "streamable_http",
+      "category": "cloud",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://mcp.jina.ai/v1",
+      "name": "Jina AI",
+      "transport": "streamable_http",
+      "category": "search",
+      "requires_auth": false,
+      "source": "jina_github"
+    },
+    {
+      "url": "https://www.context-awesome.com/api/mcp",
+      "name": "Context Awesome",
+      "transport": "streamable_http",
+      "category": "developer_tools",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://livescoremcp.com/sse",
+      "name": "LiveScore MCP",
+      "transport": "sse",
+      "category": "sports",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://mcp.peek.com",
+      "name": "Peek.com",
+      "transport": "streamable_http",
+      "category": "travel",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://webzum.com/api/mcp",
+      "name": "WebZum",
+      "transport": "streamable_http",
+      "category": "web_tools",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://mcp.llmtxt.dev/sse",
+      "name": "LLM Text",
+      "transport": "sse",
+      "category": "developer_tools",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://api.402.bot/mcp",
+      "name": "402.bot Discovery",
+      "transport": "streamable_http",
+      "category": "web3",
+      "requires_auth": false,
+      "source": "sylviangth_list"
+    },
+    {
+      "url": "https://mcp-on-edge.edgeone.site/mcp-server",
+      "name": "EdgeOne Pages",
+      "transport": "streamable_http",
+      "category": "developer_tools",
+      "requires_auth": false,
+      "source": "mcpservers_org"
+    },
+    {
+      "url": "https://chainflip-broker.io/mcp",
+      "name": "Chainflip",
+      "transport": "streamable_http",
+      "category": "web3",
+      "requires_auth": false,
+      "source": "pulsemcp"
+    },
+    {
+      "url": "https://mcp.openzeppelin.com/contracts/solidity/mcp",
+      "name": "OpenZeppelin Solidity",
+      "transport": "streamable_http",
+      "category": "blockchain",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://mcp.openzeppelin.com/contracts/cairo/mcp",
+      "name": "OpenZeppelin Cairo",
+      "transport": "streamable_http",
+      "category": "blockchain",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://bgpt.pro/mcp/sse",
+      "name": "BGPt",
+      "transport": "sse",
+      "category": "ai_ml",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://mcp.docs.astro.build/mcp",
+      "name": "Astro Docs",
+      "transport": "streamable_http",
+      "category": "developer_tools",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://api.findadomain.dev/mcp",
+      "name": "Find-A-Domain",
+      "transport": "streamable_http",
+      "category": "utilities",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://subwayinfo.nyc/mcp",
       "name": "SubwayInfo NYC",
       "transport": "streamable_http",
       "category": "transportation",
       "requires_auth": false,
-      "source": "verified_working"
+      "source": "jaw9c_list"
     },
     {
-      "url": "https://api.zip1.io/mcp",
+      "url": "https://zip1.io/mcp",
       "name": "zip1.io",
       "transport": "streamable_http",
       "category": "utilities",
       "requires_auth": false,
-      "source": "verified_working"
+      "source": "jaw9c_list"
     },
     {
-      "url": "https://javadocs.dev/mcp",
+      "url": "https://www.javadocs.dev/mcp",
       "name": "Javadocs",
       "transport": "streamable_http",
+      "category": "developer_tools",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://api.openmesh.dev/mcp",
+      "name": "OpenMesh",
+      "transport": "streamable_http",
+      "category": "blockchain",
+      "requires_auth": false,
+      "source": "jaw9c_list"
+    },
+    {
+      "url": "https://docs.mcp.cloudflare.com/sse",
+      "name": "Cloudflare Docs",
+      "transport": "sse",
       "category": "developer_tools",
       "requires_auth": false,
       "source": "verified_working"
     },
     {
-      "url": "https://mcp.openmesh.network/mcp",
-      "name": "OpenMesh",
-      "transport": "streamable_http",
-      "category": "blockchain",
-      "requires_auth": false,
-      "source": "verified_working"
-    },
-    {
-      "url": "https://mcp.semgrep.ai/mcp",
-      "name": "Semgrep",
-      "transport": "streamable_http",
-      "category": "security",
+      "url": "https://mcp.tweetsave.org/sse",
+      "name": "TweetSave",
+      "transport": "sse",
+      "category": "social_media",
       "requires_auth": false,
       "source": "verified_working"
     },
@@ -136,15 +232,7 @@
       "transport": "streamable_http",
       "category": "developer_tools",
       "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://mcp.neon.tech/mcp",
-      "name": "Neon DB",
-      "transport": "streamable_http",
-      "category": "database",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.vectorize.io/mcp",
@@ -152,7 +240,7 @@
       "transport": "streamable_http",
       "category": "ai_ml",
       "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.firecrawl.dev/mcp",
@@ -160,7 +248,7 @@
       "transport": "streamable_http",
       "category": "developer_tools",
       "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.composio.dev/mcp",
@@ -168,23 +256,7 @@
       "transport": "streamable_http",
       "category": "developer_tools",
       "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://mcp.resend.com/mcp",
-      "name": "Resend Email",
-      "transport": "streamable_http",
-      "category": "communication",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://mcp.stripe.com/mcp",
-      "name": "Stripe",
-      "transport": "streamable_http",
-      "category": "finance",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.api.coingecko.com/mcp",
@@ -192,39 +264,7 @@
       "transport": "streamable_http",
       "category": "finance",
       "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://mcp.bgpt.co/mcp",
-      "name": "BGPt",
-      "transport": "streamable_http",
-      "category": "developer_tools",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://cairo.mcp.openzeppelin.com/mcp",
-      "name": "OZ Cairo",
-      "transport": "streamable_http",
-      "category": "blockchain",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://stellar.mcp.openzeppelin.com/mcp",
-      "name": "OZ Stellar",
-      "transport": "streamable_http",
-      "category": "blockchain",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://stylus.mcp.openzeppelin.com/mcp",
-      "name": "OZ Stylus",
-      "transport": "streamable_http",
-      "category": "blockchain",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.dify.ai/mcp",
@@ -232,95 +272,95 @@
       "transport": "streamable_http",
       "category": "ai_ml",
       "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "source": "awesome_mcp"
+    },
+    {
+      "url": "https://mcp.semgrep.ai/mcp",
+      "name": "Semgrep",
+      "transport": "streamable_http",
+      "category": "security",
+      "requires_auth": true,
+      "source": "awesome_mcp"
+    },
+    {
+      "url": "https://mcp.neon.tech/mcp",
+      "name": "Neon DB",
+      "transport": "streamable_http",
+      "category": "database",
+      "requires_auth": true,
+      "source": "awesome_mcp"
+    },
+    {
+      "url": "https://mcp.stripe.com/mcp",
+      "name": "Stripe",
+      "transport": "streamable_http",
+      "category": "finance",
+      "requires_auth": true,
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.notion.so/mcp",
       "name": "Notion",
       "transport": "streamable_http",
       "category": "productivity",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "requires_auth": true,
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.linear.app/mcp",
       "name": "Linear",
       "transport": "streamable_http",
       "category": "productivity",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "requires_auth": true,
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.sentry.dev/mcp",
       "name": "Sentry",
       "transport": "streamable_http",
       "category": "developer_tools",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "requires_auth": true,
+      "source": "awesome_mcp"
     },
     {
-      "url": "https://workers.mcp.cloudflare.com/mcp",
-      "name": "Cloudflare Workers",
+      "url": "https://mcp.resend.com/mcp",
+      "name": "Resend Email",
       "transport": "streamable_http",
-      "category": "developer_tools",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "category": "communication",
+      "requires_auth": true,
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.turso.tech/mcp",
       "name": "Turso",
       "transport": "streamable_http",
       "category": "database",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://mcp.trigger.dev/mcp",
-      "name": "Trigger.dev",
-      "transport": "streamable_http",
-      "category": "developer_tools",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "requires_auth": true,
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.tinybird.co/mcp",
       "name": "Tinybird",
       "transport": "streamable_http",
       "category": "data_analytics",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
+      "requires_auth": true,
+      "source": "awesome_mcp"
+    },
+    {
+      "url": "https://mcp.trigger.dev/mcp",
+      "name": "Trigger.dev",
+      "transport": "streamable_http",
+      "category": "developer_tools",
+      "requires_auth": true,
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.grafbase.com/mcp",
       "name": "Grafbase",
       "transport": "streamable_http",
       "category": "developer_tools",
-      "requires_auth": false,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://mcp.exa.ai/mcp",
-      "name": "Exa Search",
-      "transport": "streamable_http",
-      "category": "search",
       "requires_auth": true,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://knowledge-mcp.global.api.aws",
-      "name": "AWS Knowledge",
-      "transport": "streamable_http",
-      "category": "cloud",
-      "requires_auth": true,
-      "source": "awesome-mcp-servers"
-    },
-    {
-      "url": "https://mcp.paypal.com/mcp",
-      "name": "PayPal",
-      "transport": "streamable_http",
-      "category": "finance",
-      "requires_auth": true,
-      "source": "awesome-mcp-servers"
+      "source": "awesome_mcp"
     },
     {
       "url": "https://mcp.hubspot.com/mcp",
@@ -328,7 +368,39 @@
       "transport": "streamable_http",
       "category": "crm",
       "requires_auth": true,
-      "source": "awesome-mcp-servers"
+      "source": "awesome_mcp"
+    },
+    {
+      "url": "https://mcp.paypal.com/mcp",
+      "name": "PayPal",
+      "transport": "streamable_http",
+      "category": "finance",
+      "requires_auth": true,
+      "source": "awesome_mcp"
+    },
+    {
+      "url": "https://workers.mcp.cloudflare.com/mcp",
+      "name": "Cloudflare Workers",
+      "transport": "streamable_http",
+      "category": "developer_tools",
+      "requires_auth": true,
+      "source": "awesome_mcp"
+    },
+    {
+      "url": "https://stellar.mcp.openzeppelin.com/mcp",
+      "name": "OZ Stellar",
+      "transport": "streamable_http",
+      "category": "blockchain",
+      "requires_auth": false,
+      "source": "awesome_mcp"
+    },
+    {
+      "url": "https://stylus.mcp.openzeppelin.com/mcp",
+      "name": "OZ Stylus",
+      "transport": "streamable_http",
+      "category": "blockchain",
+      "requires_auth": false,
+      "source": "awesome_mcp"
     }
   ]
 }
