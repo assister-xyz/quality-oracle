@@ -46,6 +46,11 @@ async def connect_db():
     await _db.quality__item_params.create_index("question_id", unique=True)
     await _db.quality__item_params.create_index("status")
     await _db.quality__item_params.create_index("domain")
+    # On-chain transaction tracking (ERC-8004, EAS)
+    await _db.quality__onchain_txs.create_index("tx_hash", unique=True, sparse=True)
+    await _db.quality__onchain_txs.create_index("evaluation_id")
+    await _db.quality__onchain_txs.create_index("protocol")
+    await _db.quality__onchain_txs.create_index("created_at")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -121,3 +126,7 @@ def rankings_col():
 
 def item_params_col():
     return get_db().quality__item_params
+
+
+def onchain_txs_col():
+    return get_db().quality__onchain_txs

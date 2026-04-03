@@ -24,6 +24,7 @@ from src.api.v1.scan import router as scan_router
 from src.api.v1.admin import router as admin_router
 from src.api.v1.stats import router as stats_router
 from src.api.v1.og import router as og_router
+from src.api.v1.onchain import router as onchain_router
 from src.api.agent_card import router as agent_card_router
 from src.storage.mongodb import connect_db, close_db
 from src.storage.cache import connect_redis, close_redis
@@ -102,6 +103,7 @@ app.include_router(scan_router, prefix="/v1", tags=["scan"])
 app.include_router(admin_router, prefix="/v1", tags=["admin"])
 app.include_router(stats_router, prefix="/v1", tags=["stats"])
 app.include_router(og_router, prefix="/v1", tags=["og"])
+app.include_router(onchain_router, prefix="/v1", tags=["onchain"])
 app.include_router(agent_card_router, tags=["a2a"])
 
 

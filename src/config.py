@@ -75,6 +75,32 @@ class Settings(BaseSettings):
     solana_rpc_url: str = "https://api.devnet.solana.com"
     solana_cluster: str = "devnet"
 
+    # ── On-Chain: ERC-8004 (Base L2) ──────────────────────────────────────────
+    erc8004_enabled: bool = False
+    erc8004_evaluator_private_key: str = ""  # Hex-encoded private key for posting feedback
+    base_rpc_url: str = "https://mainnet.base.org"
+    base_chain_id: int = 8453
+    # Deterministic CREATE2 addresses (same on all chains)
+    erc8004_identity_registry: str = "0x1f55Fb5898c42dA6327172F197B03048ef5f0057"
+    erc8004_reputation_registry: str = "0x82e28A65CE6079e3aDc3D4722Af1F917b3A26E34"
+
+    # ── On-Chain: EAS (Ethereum Attestation Service) ────────────────────────
+    eas_enabled: bool = False
+    eas_private_key: str = ""  # Hex-encoded; shares wallet with ERC-8004 if empty
+    eas_contract_address: str = "0x4200000000000000000000000000000000000021"  # Base
+    eas_schema_registry: str = "0x4200000000000000000000000000000000000020"  # Base
+    eas_schema_uid: str = ""  # Set after registering AQVC schema
+    eas_onchain_min_score: int = 90  # Only on-chain for Audited tier (score >= 90)
+
+    # ── On-Chain: IPFS ──────────────────────────────────────────────────────
+    ipfs_gateway: str = "https://w3s.link/ipfs/"
+    ipfs_upload_url: str = ""  # web3.storage or Pinata upload endpoint
+    ipfs_api_token: str = ""
+
+    # ── On-Chain: Gas Tracking ──────────────────────────────────────────────
+    gas_tracking_enabled: bool = True
+    onchain_async: bool = True  # Non-blocking on-chain posting
+
     # CORS
     cors_origins: List[str] = ["http://localhost:3000", "http://localhost:3001", "http://localhost:3003", "http://localhost:3004"]
 

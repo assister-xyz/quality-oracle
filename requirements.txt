@@ -27,6 +27,10 @@ arq==0.26.1
 # Rating System (Battle Arena)
 openskill==6.1.0
 
+# On-Chain (ERC-8004, EAS attestations)
+web3>=6.0.0
+eth-account>=0.8.0
+
 # Utils
 python-dotenv==1.0.1
 python-multipart==0.0.20
