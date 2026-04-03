@@ -316,13 +316,12 @@ class TestERC8004:
         """Feedback data encodes as JSON with protocol header."""
         from src.onchain.erc8004 import _encode_feedback_data
 
-        with patch("src.onchain.erc8004.get_web3"):
-            data = _encode_feedback_data(
-                score=82,
-                tier="proficient",
-                dimensions={"accuracy": 88, "safety": 72},
-                evaluation_id="eval-123",
-            )
+        data = _encode_feedback_data(
+            score=82,
+            tier="proficient",
+            dimensions={"accuracy": 88, "safety": 72},
+            evaluation_id="eval-123",
+        )
 
         assert isinstance(data, bytes)
         parsed = json.loads(data.decode())
@@ -335,12 +334,11 @@ class TestERC8004:
         """IPFS hash is included when provided."""
         from src.onchain.erc8004 import _encode_feedback_data
 
-        with patch("src.onchain.erc8004.get_web3"):
-            data = _encode_feedback_data(
-                score=90, tier="expert",
-                dimensions={}, evaluation_id="eval-456",
-                ipfs_hash="QmTestHash123",
-            )
+        data = _encode_feedback_data(
+            score=90, tier="expert",
+            dimensions={}, evaluation_id="eval-456",
+            ipfs_hash="QmTestHash123",
+        )
 
         parsed = json.loads(data.decode())
         assert parsed["ipfs"] == "QmTestHash123"

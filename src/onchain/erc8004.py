@@ -9,7 +9,6 @@ See https://eips.ethereum.org/EIPS/eip-8004
 """
 import json
 import logging
-from datetime import datetime
 
 from web3 import Web3
 
@@ -129,7 +128,6 @@ def _encode_feedback_data(
 
     Format: ABI-encoded tuple of (score, tier, dimensions_json, eval_id, attestation_ref)
     """
-    w3 = get_web3()
     # Pack evaluation data as JSON bytes for maximum flexibility
     payload = {
         "protocol": "laureum-aqvc-v1",
