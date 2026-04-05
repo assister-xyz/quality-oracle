@@ -2,7 +2,7 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from src.storage.mongodb import scores_col
 from src.storage.cache import get_cached_score, cache_score
@@ -17,6 +17,7 @@ router = APIRouter()
 @router.get("/score/{target_id:path}/share")
 async def get_share_data(
     target_id: str,
+    request: Request,
     response: Response,
     api_key_doc: dict = Depends(get_api_key),
 ):
@@ -61,8 +62,8 @@ async def get_share_data(
         pass
 
     # URLs
-    from src.config import settings
-    base = settings.base_url.rstrip("/")
+    from src.config import get_base_url
+    base = get_base_url(request)
     profile_url = f"https://laureum.ai/agent/{target_id}"
     og_image_url = f"https://laureum.ai/api/og?id={target_id}"
     badge_svg_url = f"{base}/v1/badge/{target_id}.svg"

@@ -6,7 +6,7 @@ from datetime import datetime
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response
 
 from src.storage.models import (
     EvaluateRequest,
@@ -31,7 +31,7 @@ from src.auth.rate_limiter import (
     is_eval_level_allowed,
     add_rate_limit_headers,
 )
-from src.config import settings
+from src.config import settings, get_base_url
 from src.payments.x402 import require_payment
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,7 @@ async def submit_evaluation(
 @router.get("/evaluate/{evaluation_id}", response_model=EvaluationStatus)
 async def get_evaluation_status(
     evaluation_id: str,
+    request: Request,
     api_key_doc: dict = Depends(get_api_key),
 ):
     """Check the status of an evaluation and get full report when completed."""
@@ -225,7 +226,8 @@ async def get_evaluation_status(
         )
 
         report = doc.get("report")
-        badge_url = f"{settings.base_url}/v1/badge/{doc['target_id']}.svg"
+        base = get_base_url(request)
+        badge_url = f"{base}/v1/badge/{doc['target_id']}.svg"
 
         if doc.get("attestation_id"):
             from src.storage.mongodb import attestations_col
@@ -802,9 +804,9 @@ async def _deliver_webhook(
         target_id=target_id,
         score=scores.get("overall_score", 0),
         tier=scores.get("tier", "failed"),
-        report_url=f"{settings.base_url}/v1/evaluate/{evaluation_id}",
-        badge_url=f"{settings.base_url}/v1/badge/{target_id}.svg",
-        attestation_url=f"{settings.base_url}/v1/attestation/{attestation_id}" if attestation_id else None,
+        report_url=f"{get_base_url()}/v1/evaluate/{evaluation_id}",
+        badge_url=f"{get_base_url()}/v1/badge/{target_id}.svg",
+        attestation_url=f"{get_base_url()}/v1/attestation/{attestation_id}" if attestation_id else None,
     )
 
     body = payload.model_dump_json()

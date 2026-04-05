@@ -119,13 +119,25 @@ class Settings(BaseSettings):
     webhook_timeout_seconds: int = 10
     webhook_max_retries: int = 3
 
-    # Base URL for constructing links in responses
+    # Base URL for constructing links in responses (fallback only)
     base_url: str = "http://localhost:8002"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 settings = Settings()
+
+
+def get_base_url(request=None) -> str:
+    """Derive base URL from the incoming request, or fall back to settings.
+
+    Handles AWS ALB x-forwarded-proto header for correct HTTPS detection.
+    """
+    if request is not None:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("host", request.url.netloc)
+        return f"{scheme}://{host}"
+    return settings.base_url.rstrip("/")
 
 
 # ── Provider Pricing (USD per 1M tokens) ────────────────────────────────────

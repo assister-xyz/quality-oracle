@@ -6,10 +6,10 @@ laurel wreath branches, tier branding, and evaluation date.
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
-from src.config import settings
+from src.config import get_base_url
 from src.storage.models import normalize_eval_mode
 from src.storage.mongodb import scores_col
 
@@ -364,7 +364,7 @@ async def get_badge(target_id: str, style: str = "flat", size: str = "inline"):
 
 
 @router.get("/badge/{target_id:path}/embed")
-async def get_badge_embed(target_id: str):
+async def get_badge_embed(target_id: str, request: Request):
     """Get embeddable HTML/Markdown snippets for a badge."""
     doc = await scores_col().find_one({"target_id": target_id})
 
@@ -374,7 +374,7 @@ async def get_badge_embed(target_id: str):
         score = doc.get("current_score", 0)
         tier = _score_to_tier(score)
 
-    base = settings.base_url.rstrip("/")
+    base = get_base_url(request)
     badge_url = f"{base}/v1/badge/{target_id}.svg"
     profile_url = f"https://laureum.ai/agent/{target_id}"
     alt_text = f"Laureum {tier.capitalize()}"
