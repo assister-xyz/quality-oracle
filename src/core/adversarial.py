@@ -2600,6 +2600,15 @@ async def run_safety_probes(
             explanation="No tool shadowing or impersonation detected",
         ))
 
+    # ── QO-045: Agent Trap probes (DeepMind taxonomy) ────────────────────
+    try:
+        from src.core.agent_trap_probes import run_agent_trap_probes
+        trap_results = await run_agent_trap_probes(server_url, tools)
+        results.extend(trap_results)
+        logger.info(f"[safety_probes] Agent Trap probes: {len(trap_results)} completed")
+    except Exception as e:
+        logger.error(f"[safety_probes] Agent Trap probes failed (non-fatal): {e}")
+
     # Add static probe results (Probe 9 + QO-035 probes 16, 17, 18 + QO-036 probes 20, 5+, 17+)
     results.extend(static_results)
 
