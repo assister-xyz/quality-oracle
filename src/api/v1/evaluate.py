@@ -744,9 +744,28 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             "cost_usd": scores.get("cost_usd"),
             "recorded_at": now,
             "delta_from_previous": delta,
+            "manifest_hash": manifest_hash,
         })
 
         logger.info(f"Evaluation {evaluation_id} completed: score={scores['overall_score']}")
+
+        # ── QO-043: Score anomaly detection ────────────────────────────────
+        try:
+            from src.core.score_anomaly import check_score_anomaly, record_anomaly
+            anomaly = await check_score_anomaly(
+                target_id=request.target_url,
+                new_score=scores["overall_score"],
+                manifest_hash=manifest_hash,
+            )
+            if anomaly:
+                await record_anomaly(anomaly)
+                # Store anomaly reference in evaluation doc
+                await evaluations_col().update_one(
+                    {"evaluation_id": evaluation_id},
+                    {"$set": {"score_anomaly": anomaly.to_dict()}},
+                )
+        except Exception as e:
+            logger.error(f"Score anomaly check failed (non-fatal): {e}")
 
         # ── On-chain posting (ERC-8004 + EAS) — async, best-effort ──────
         if settings.erc8004_enabled or settings.eas_enabled:
