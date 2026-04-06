@@ -51,6 +51,10 @@ async def connect_db():
     await _db.quality__onchain_txs.create_index("evaluation_id")
     await _db.quality__onchain_txs.create_index("protocol")
     await _db.quality__onchain_txs.create_index("created_at")
+    # Score anomaly detection (QO-043)
+    await _db.quality__score_anomalies.create_index("target_id")
+    await _db.quality__score_anomalies.create_index("anomaly_type")
+    await _db.quality__score_anomalies.create_index("detected_at")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -130,3 +134,7 @@ def item_params_col():
 
 def onchain_txs_col():
     return get_db().quality__onchain_txs
+
+
+def score_anomalies_col():
+    return get_db().quality__score_anomalies

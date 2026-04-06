@@ -558,6 +558,13 @@ class LLMJudge:
         """
         self.metrics.total_judged += 1
 
+        # QO-043: Sanitize MCP response before judging to block adversarial manipulation
+        from src.core.judge_sanitizer import sanitize_judge_input
+        san = sanitize_judge_input(answer)
+        if san.had_detections:
+            self.metrics.sanitized_inputs = getattr(self.metrics, "sanitized_inputs", 0) + 1
+        answer = san.sanitized_text
+
         # Optimization: route simple test types directly to fuzzy scorer
         if test_type in FUZZY_ROUTABLE_TEST_TYPES:
             start = time.time()
