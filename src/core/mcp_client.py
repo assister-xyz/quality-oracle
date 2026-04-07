@@ -5,6 +5,7 @@ Supports both SSE and Streamable HTTP transports with auto-detection
 and fallback. Uses the official MCP SDK.
 """
 import asyncio
+import contextvars
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -16,6 +17,19 @@ from mcp.client.sse import sse_client
 from mcp.types import TextContent
 
 logger = logging.getLogger(__name__)
+
+# QO-047: Context-local evaluation_id for audit logging.
+# Set by the evaluator at the start of each eval, so all downstream
+# tool calls can write audit records linked by eval_id.
+current_evaluation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "current_evaluation_id", default=None
+)
+current_target_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "current_target_id", default=None
+)
+_call_index_counter: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "_call_index_counter", default=0
+)
 
 # Timeouts
 CONNECT_TIMEOUT = 10  # seconds
@@ -130,7 +144,12 @@ async def _call_tool_in_session(
     start: float,
     timeout: int = TOOL_CALL_TIMEOUT,
 ) -> dict:
-    """Call a tool within an existing session. Handles timeout and errors."""
+    """Call a tool within an existing session. Handles timeout and errors.
+
+    QO-047: Best-effort audit log of every call (success or failure)
+    via current_evaluation_id contextvar.
+    """
+    result_dict: dict
     try:
         result = await asyncio.wait_for(
             session.call_tool(tool_name, arguments),
@@ -146,7 +165,7 @@ async def _call_tool_in_session(
             else:
                 text_parts.append(str(content))
 
-        return {
+        result_dict = {
             "content": "\n".join(text_parts),
             "is_error": result.isError or False,
             "latency_ms": latency_ms,
@@ -154,7 +173,7 @@ async def _call_tool_in_session(
     except asyncio.TimeoutError:
         latency_ms = int((time.time() - start) * 1000)
         logger.warning(f"Tool call {tool_name} timed out after {timeout}s")
-        return {
+        result_dict = {
             "content": f"Tool call timed out after {timeout}s",
             "is_error": True,
             "latency_ms": latency_ms,
@@ -162,11 +181,33 @@ async def _call_tool_in_session(
     except Exception as e:
         latency_ms = int((time.time() - start) * 1000)
         logger.error(f"Tool call {tool_name} failed: {e}")
-        return {
+        result_dict = {
             "content": f"Tool call failed: {e}",
             "is_error": True,
             "latency_ms": latency_ms,
         }
+
+    # QO-047: Audit log (best-effort, non-blocking)
+    eval_id = current_evaluation_id.get()
+    if eval_id:
+        try:
+            from src.core.audit_log import log_tool_call
+            call_idx = _call_index_counter.get()
+            _call_index_counter.set(call_idx + 1)
+            await log_tool_call(
+                evaluation_id=eval_id,
+                target_id=current_target_id.get(),
+                tool_name=tool_name,
+                arguments=arguments,
+                response_text=result_dict["content"],
+                is_error=result_dict["is_error"],
+                latency_ms=result_dict["latency_ms"],
+                call_index=call_idx,
+            )
+        except Exception as e:
+            logger.debug(f"Audit log skipped: {e}")
+
+    return result_dict
 
 
 async def call_tools_batch(

@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     # Base URL for constructing links in responses (fallback only)
     base_url: str = "http://localhost:8002"
 
+    # ── Audit logging (QO-047) ───────────────────────────────────────────────
+    audit_logging_enabled: bool = True
+    audit_max_response_kb: int = 5
+    audit_max_prompt_kb: int = 5
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

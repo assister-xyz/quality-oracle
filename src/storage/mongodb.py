@@ -62,6 +62,21 @@ async def connect_db():
     await _db.quality__clone_suspects.create_index([("agent_a_id", 1), ("agent_b_id", 1)], unique=True)
     await _db.quality__clone_suspects.create_index("status")
     await _db.quality__clone_suspects.create_index("detected_at")
+    # Audit trail (QO-047)
+    await _db.quality__tool_calls.create_index("evaluation_id")
+    await _db.quality__tool_calls.create_index("target_id")
+    await _db.quality__tool_calls.create_index("tool_name")
+    await _db.quality__tool_calls.create_index("created_at")
+    await _db.quality__judge_calls.create_index("evaluation_id")
+    await _db.quality__judge_calls.create_index("provider")
+    await _db.quality__judge_calls.create_index("created_at")
+    await _db.quality__consensus_votes.create_index("evaluation_id")
+    await _db.quality__consensus_votes.create_index("consensus_round_id")
+    await _db.quality__sanitization_events.create_index("evaluation_id")
+    await _db.quality__sanitization_events.create_index("created_at")
+    await _db.quality__probe_executions.create_index("evaluation_id")
+    await _db.quality__probe_executions.create_index("probe_type")
+    await _db.quality__probe_executions.create_index("passed")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -153,3 +168,24 @@ def operators_col():
 
 def clone_suspects_col():
     return get_db().quality__clone_suspects
+
+
+# Audit trail (QO-047)
+def tool_calls_col():
+    return get_db().quality__tool_calls
+
+
+def judge_calls_col():
+    return get_db().quality__judge_calls
+
+
+def consensus_votes_col():
+    return get_db().quality__consensus_votes
+
+
+def sanitization_events_col():
+    return get_db().quality__sanitization_events
+
+
+def probe_executions_col():
+    return get_db().quality__probe_executions
