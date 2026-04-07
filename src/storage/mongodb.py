@@ -77,6 +77,11 @@ async def connect_db():
     await _db.quality__probe_executions.create_index("evaluation_id")
     await _db.quality__probe_executions.create_index("probe_type")
     await _db.quality__probe_executions.create_index("passed")
+    # GitHub OAuth (QO-046)
+    await _db.quality__operators.create_index("github_user_id", unique=True, sparse=True)
+    await _db.quality__operator_registration_attempts.create_index("github_user_id")
+    await _db.quality__operator_registration_attempts.create_index("rejected_at")
+    await _db.quality__operator_registration_attempts.create_index("reason")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -189,3 +194,8 @@ def sanitization_events_col():
 
 def probe_executions_col():
     return get_db().quality__probe_executions
+
+
+# GitHub OAuth (QO-046)
+def operator_registration_attempts_col():
+    return get_db().quality__operator_registration_attempts
