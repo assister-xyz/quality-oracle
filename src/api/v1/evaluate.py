@@ -511,6 +511,15 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                 }
             if eval_result.safety_report:
                 scores["safety_report"] = eval_result.safety_report
+                # QO-045: Compute Agent Trap coverage from probe results
+                try:
+                    from src.core.trap_coverage import compute_trap_coverage
+                    probe_results = eval_result.safety_report
+                    if isinstance(probe_results, dict):
+                        probe_results = probe_results.get("results", [])
+                    scores["agent_trap_coverage"] = compute_trap_coverage(probe_results)
+                except Exception as e:
+                    logger.error(f"Trap coverage computation failed (non-fatal): {e}")
             if eval_result.process_quality_report:
                 scores["process_quality_report"] = eval_result.process_quality_report
             if eval_result.latency_stats:
