@@ -94,6 +94,8 @@ async def check_rate_limit(api_key: str, limit: int, window: str = "month") -> t
     pipe.incr(key)
     if window == "month":
         pipe.expire(key, 2592000)  # 30 days
+    elif window == "day":
+        pipe.expire(key, 86400)    # 24 hours
     elif window == "minute":
         pipe.expire(key, 60)
     await pipe.execute()

@@ -53,6 +53,59 @@ def normalize_eval_mode(raw: Optional[str]) -> Optional[str]:
     return _COMPAT.get(raw, raw)
 
 
+# ── Sybil Defense (QO-044) ───────────────────────────────────────────────────
+
+
+class OperatorStatus(str, Enum):
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    BANNED = "banned"
+
+
+class CloneSuspectStatus(str, Enum):
+    PENDING = "pending"
+    CONFIRMED_CLONE = "confirmed_clone"
+    CLEARED = "cleared"
+
+
+class Operator(BaseModel):
+    operator_id: str
+    display_name: str
+    email: Optional[str] = None
+    auth_provider: str = "email"  # email | github (future)
+    agent_target_ids: List[str] = Field(default_factory=list)
+    max_agents: int = 5
+    max_battles_per_day: int = 15
+    status: OperatorStatus = OperatorStatus.ACTIVE
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class OperatorRegisterRequest(BaseModel):
+    display_name: str
+    email: str
+
+
+class OperatorRegisterResponse(BaseModel):
+    operator_id: str
+    display_name: str
+    email: str
+    max_agents: int
+    max_battles_per_day: int
+    created_at: datetime
+
+
+class CloneSuspect(BaseModel):
+    agent_a_id: str
+    agent_b_id: str
+    similarity_score: float  # Jaccard 0.0-1.0
+    matched_questions: int
+    total_questions: int
+    status: CloneSuspectStatus = CloneSuspectStatus.PENDING
+    detected_at: datetime
+    notes: Optional[str] = None
+
+
 # Request models
 class EvaluateRequest(BaseModel):
     target_url: str
