@@ -55,6 +55,13 @@ async def connect_db():
     await _db.quality__score_anomalies.create_index("target_id")
     await _db.quality__score_anomalies.create_index("anomaly_type")
     await _db.quality__score_anomalies.create_index("detected_at")
+    # Sybil defense (QO-044)
+    await _db.quality__operators.create_index("operator_id", unique=True)
+    await _db.quality__operators.create_index("email", unique=True, sparse=True)
+    await _db.quality__operators.create_index("agent_target_ids")
+    await _db.quality__clone_suspects.create_index([("agent_a_id", 1), ("agent_b_id", 1)], unique=True)
+    await _db.quality__clone_suspects.create_index("status")
+    await _db.quality__clone_suspects.create_index("detected_at")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -138,3 +145,11 @@ def onchain_txs_col():
 
 def score_anomalies_col():
     return get_db().quality__score_anomalies
+
+
+def operators_col():
+    return get_db().quality__operators
+
+
+def clone_suspects_col():
+    return get_db().quality__clone_suspects

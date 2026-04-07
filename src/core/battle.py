@@ -298,16 +298,72 @@ class BattleEngine:
     async def create_battle(self, request: BattleRequest) -> str:
         """Create a new battle record in pending state.
 
-        Validates: same-operator check, cooldown.
+        Validates: same-operator check (host + identity), cooldown,
+        per-operator rate limit, clone detection (QO-044).
         Returns battle_id.
         """
-        # Same operator check
+        # Same operator check (hostname-based, fast)
         if self.check_same_operator(request.agent_a_url, request.agent_b_url):
             raise ValueError("Cannot battle agents from the same operator")
 
         # Generate target IDs from URLs
         target_id_a = hashlib.sha256(request.agent_a_url.encode()).hexdigest()[:16]
         target_id_b = hashlib.sha256(request.agent_b_url.encode()).hexdigest()[:16]
+
+        # ── QO-044: Operator identity check ─────────────────────────────
+        try:
+            from src.core.operator_identity import (
+                are_same_operator,
+                get_operator_for_agent,
+                check_operator_battle_limit,
+            )
+            # Block same-operator battles by registered identity
+            if await are_same_operator(target_id_a, target_id_b):
+                raise ValueError("Cannot battle agents from the same operator (identity match)")
+
+            # Per-operator daily rate limit (applies if either side has an operator)
+            for tid in (target_id_a, target_id_b):
+                op = await get_operator_for_agent(tid)
+                if op:
+                    allowed, remaining_calls, limit = await check_operator_battle_limit(
+                        op.operator_id, limit=op.max_battles_per_day,
+                    )
+                    if not allowed:
+                        raise ValueError(
+                            f"Operator {op.operator_id} reached daily battle limit "
+                            f"({limit}/day)"
+                        )
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(f"Operator check skipped (non-fatal): {e}")
+
+        # ── QO-044: Clone detection ─────────────────────────────────────
+        try:
+            from src.core.clone_detection import (
+                check_clone_similarity,
+                flag_clone_suspect,
+                is_flagged_clone_pair,
+            )
+            # Block already-flagged clone pairs
+            if await is_flagged_clone_pair(target_id_a, target_id_b):
+                raise ValueError(
+                    "Battle blocked: agents previously flagged as potential clones"
+                )
+
+            # Check current similarity (cheap if no overlap)
+            sim = await check_clone_similarity(target_id_a, target_id_b)
+            if sim and sim["is_clone"]:
+                await flag_clone_suspect(target_id_a, target_id_b, sim)
+                raise ValueError(
+                    f"Battle blocked: agents share {sim['similarity']:.0%} "
+                    f"identical responses ({sim['matched']}/{sim['total']} questions). "
+                    f"Possible clones."
+                )
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(f"Clone check skipped (non-fatal): {e}")
 
         # Cooldown check
         remaining = await self.check_cooldown(target_id_a, target_id_b)
