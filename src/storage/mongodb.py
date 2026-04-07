@@ -62,6 +62,11 @@ async def connect_db():
     await _db.quality__clone_suspects.create_index([("agent_a_id", 1), ("agent_b_id", 1)], unique=True)
     await _db.quality__clone_suspects.create_index("status")
     await _db.quality__clone_suspects.create_index("detected_at")
+    # GitHub OAuth (QO-046)
+    await _db.quality__operators.create_index("github_user_id", unique=True, sparse=True)
+    await _db.quality__operator_registration_attempts.create_index("github_user_id")
+    await _db.quality__operator_registration_attempts.create_index("rejected_at")
+    await _db.quality__operator_registration_attempts.create_index("reason")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -153,3 +158,7 @@ def operators_col():
 
 def clone_suspects_col():
     return get_db().quality__clone_suspects
+
+
+def operator_registration_attempts_col():
+    return get_db().quality__operator_registration_attempts
