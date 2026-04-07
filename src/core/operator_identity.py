@@ -53,6 +53,10 @@ class OperatorRateLimitError(OperatorError):
     """Operator exceeded daily battle limit."""
 
 
+class AntiAbuseError(OperatorError):
+    """GitHub account failed anti-abuse heuristics."""
+
+
 def _normalize_email(email: str) -> str:
     """Lowercase and strip whitespace."""
     return email.strip().lower()
@@ -232,3 +236,155 @@ async def check_operator_battle_limit(operator_id: str, limit: int = DEFAULT_MAX
     """
     key = f"operator_battles:{operator_id}"
     return await check_rate_limit(key, limit, window="day")
+
+
+# ── GitHub OAuth (QO-046) ────────────────────────────────────────────────────
+
+
+def check_github_anti_abuse(
+    account_age_days: int,
+    public_repos: int,
+    followers: int,
+    min_age_days: int = 30,
+    require_repos_or_followers: bool = True,
+) -> None:
+    """Apply anti-abuse heuristics to a GitHub profile.
+
+    Raises AntiAbuseError with a reason code if the profile fails checks.
+    """
+    if account_age_days < min_age_days:
+        raise AntiAbuseError(
+            f"GitHub account too young: {account_age_days} days < {min_age_days} required"
+        )
+
+    if require_repos_or_followers and public_repos == 0 and followers == 0:
+        raise AntiAbuseError(
+            "GitHub account has no public repositories or followers (likely throwaway)"
+        )
+
+
+async def log_rejected_registration(
+    github_user_id: int,
+    github_username: str,
+    reason: str,
+    details: Optional[dict] = None,
+) -> None:
+    """Log a rejected GitHub OAuth registration attempt for audit."""
+    from src.storage.mongodb import operator_registration_attempts_col
+
+    doc = {
+        "github_user_id": github_user_id,
+        "github_username": github_username,
+        "reason": reason,
+        "details": details or {},
+        "rejected_at": datetime.now(timezone.utc),
+    }
+    try:
+        await operator_registration_attempts_col().insert_one(doc)
+    except Exception as e:
+        logger.error(f"Failed to log rejected registration: {e}")
+
+
+async def upsert_github_operator(
+    github_user_id: int,
+    github_username: str,
+    github_avatar_url: str,
+    display_name: str,
+    account_age_days: int,
+    public_repos: int,
+    followers: int,
+    email: Optional[str] = None,
+) -> Operator:
+    """Create or update an operator from a GitHub profile.
+
+    Applies anti-abuse checks. Raises AntiAbuseError if rejected.
+    On existing github_user_id, updates profile fields and last_login_at.
+    """
+    from src.config import settings
+    from src.storage.mongodb import operators_col
+
+    # 1. Apply anti-abuse heuristics
+    try:
+        check_github_anti_abuse(
+            account_age_days=account_age_days,
+            public_repos=public_repos,
+            followers=followers,
+            min_age_days=settings.github_min_account_age_days,
+            require_repos_or_followers=settings.github_require_repos_or_followers,
+        )
+    except AntiAbuseError as e:
+        await log_rejected_registration(
+            github_user_id=github_user_id,
+            github_username=github_username,
+            reason=str(e),
+            details={
+                "account_age_days": account_age_days,
+                "public_repos": public_repos,
+                "followers": followers,
+            },
+        )
+        raise
+
+    col = operators_col()
+    now = datetime.now(timezone.utc)
+
+    # 2. Check if operator exists by github_user_id
+    existing = await col.find_one({"github_user_id": github_user_id})
+
+    if existing:
+        # Update profile data + last_login_at
+        update_doc = {
+            "$set": {
+                "github_username": github_username,
+                "github_avatar_url": github_avatar_url,
+                "github_account_age_days": account_age_days,
+                "github_public_repos": public_repos,
+                "github_followers": followers,
+                "email": email or existing.get("email"),
+                "verified": True,
+                "last_login_at": now,
+                "updated_at": now,
+            }
+        }
+        await col.update_one({"github_user_id": github_user_id}, update_doc)
+        existing.update(update_doc["$set"])
+        existing.pop("_id", None)
+        logger.info(f"Updated GitHub operator {existing['operator_id']} ({github_username})")
+        return Operator(**existing)
+
+    # 3. Create new operator
+    operator_id = _generate_operator_id()
+    doc = {
+        "operator_id": operator_id,
+        "display_name": display_name or github_username,
+        "email": email,
+        "auth_provider": "github",
+        "github_user_id": github_user_id,
+        "github_username": github_username,
+        "github_avatar_url": github_avatar_url,
+        "github_account_age_days": account_age_days,
+        "github_public_repos": public_repos,
+        "github_followers": followers,
+        "verified": True,
+        "agent_target_ids": [],
+        "max_agents": DEFAULT_MAX_AGENTS,
+        "max_battles_per_day": DEFAULT_MAX_BATTLES_PER_DAY,
+        "status": OperatorStatus.ACTIVE.value,
+        "created_at": now,
+        "last_login_at": now,
+    }
+
+    await col.insert_one(doc)
+    logger.info(f"Created GitHub operator {operator_id} ({github_username}) age={account_age_days}d repos={public_repos} followers={followers}")
+    return Operator(**doc)
+
+
+async def get_operator_by_github_id(github_user_id: int) -> Optional[Operator]:
+    """Lookup operator by GitHub user ID."""
+    from src.storage.mongodb import operators_col
+
+    doc = await operators_col().find_one({"github_user_id": github_user_id})
+    if doc:
+        doc.pop("_id", None)
+        return Operator(**doc)
+    return None

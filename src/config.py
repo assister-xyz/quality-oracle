@@ -122,6 +122,22 @@ class Settings(BaseSettings):
     # Base URL for constructing links in responses (fallback only)
     base_url: str = "http://localhost:8002"
 
+    # ── GitHub OAuth (QO-046) ────────────────────────────────────────────────
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_oauth_redirect_url: str = "http://localhost:8002/v1/auth/github/callback"
+    # HS256 secret for signing session JWT cookies. MUST be set in production.
+    session_secret: str = "change-me-to-random-32-byte-string"
+    # Session cookie
+    session_cookie_name: str = "laureum_session"
+    session_cookie_max_age: int = 86400  # 24 hours
+    session_cookie_secure: bool = False  # Set True in production (HTTPS)
+    # GitHub anti-abuse heuristics
+    github_min_account_age_days: int = 30
+    github_require_repos_or_followers: bool = True
+    # Frontend redirect after OAuth success
+    frontend_base_url: str = "http://localhost:3000"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

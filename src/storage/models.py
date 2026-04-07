@@ -72,13 +72,26 @@ class Operator(BaseModel):
     operator_id: str
     display_name: str
     email: Optional[str] = None
-    auth_provider: str = "email"  # email | github (future)
+    auth_provider: str = "email"  # email (legacy) | github (verified)
+
+    # GitHub OAuth fields (QO-046) — present when auth_provider == "github"
+    github_user_id: Optional[int] = None
+    github_username: Optional[str] = None
+    github_avatar_url: Optional[str] = None
+    github_account_age_days: Optional[int] = None
+    github_public_repos: Optional[int] = None
+    github_followers: Optional[int] = None
+
+    # Verified flag: True only when auth_provider == "github" AND passed anti-abuse checks
+    verified: bool = False
+
     agent_target_ids: List[str] = Field(default_factory=list)
     max_agents: int = 5
     max_battles_per_day: int = 15
     status: OperatorStatus = OperatorStatus.ACTIVE
     created_at: datetime
     updated_at: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
 
 
 class OperatorRegisterRequest(BaseModel):
@@ -104,6 +117,21 @@ class CloneSuspect(BaseModel):
     status: CloneSuspectStatus = CloneSuspectStatus.PENDING
     detected_at: datetime
     notes: Optional[str] = None
+
+
+class AuthMeResponse(BaseModel):
+    """Current verified operator info (GET /v1/auth/me)."""
+    operator_id: str
+    display_name: str
+    github_username: str
+    github_avatar_url: Optional[str] = None
+    email: Optional[str] = None
+    verified: bool = True
+    agent_count: int
+    max_agents: int
+    max_battles_per_day: int
+    created_at: datetime
+    last_login_at: Optional[datetime] = None
 
 
 # Request models

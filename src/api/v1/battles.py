@@ -5,9 +5,10 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 
 from src.core.battle import BattleEngine, CooldownError, MatchQualityError
+from src.core.operator_identity import add_agent_to_operator, OperatorError
 from src.storage.mongodb import battles_col
-from src.storage.models import BattleRequest
-from src.auth.dependencies import get_api_key
+from src.storage.models import BattleRequest, Operator
+from src.auth.dependencies import get_api_key, require_verified_operator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -19,13 +20,25 @@ _battle_engine = BattleEngine()
 async def create_battle(
     request: BattleRequest,
     background_tasks: BackgroundTasks,
-    api_key_doc: dict = Depends(get_api_key),
+    operator: Operator = Depends(require_verified_operator),
 ):
     """Create and start a head-to-head battle between two agents.
 
-    Validates same-operator check, cooldown, and match quality gate.
-    Battle runs asynchronously in background.
+    QO-046: Requires GitHub-verified operator session. Auto-claims agents
+    for the calling operator if not yet owned by anyone.
+
+    Validates same-operator check, cooldown, clone detection, per-operator
+    rate limit, and match quality gate. Battle runs asynchronously.
     """
+    # Auto-claim ownership of the calling operator's agents if not yet claimed
+    # This allows a verified operator to register agents implicitly via battles
+    for url in (request.agent_a_url, request.agent_b_url):
+        try:
+            await add_agent_to_operator(operator.operator_id, url)
+        except OperatorError as e:
+            # Already owned by another operator → let battle logic block it
+            logger.info(f"[battle] Agent {url} not claimed: {e}")
+
     try:
         battle_id = await _battle_engine.create_battle(request)
     except ValueError as e:
@@ -38,10 +51,12 @@ async def create_battle(
     # Run battle in background
     background_tasks.add_task(_battle_engine.run_battle, battle_id)
 
+    logger.info(f"[battle] Created {battle_id} by operator {operator.operator_id} ({operator.github_username})")
     return {
         "battle_id": battle_id,
         "status": "pending",
         "poll_url": f"/v1/battle/{battle_id}",
+        "operator_id": operator.operator_id,
     }
 
 
