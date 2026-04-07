@@ -565,6 +565,46 @@ class LLMJudge:
             self.metrics.sanitized_inputs = getattr(self.metrics, "sanitized_inputs", 0) + 1
         answer = san.sanitized_text
 
+        # Compute result (single-return refactor for QO-047 audit logging)
+        result = await self._ajudge_inner(question, expected, answer, test_type)
+
+        # QO-047: Audit log judge call + sanitization event (best-effort, non-blocking)
+        try:
+            from src.core.mcp_client import current_evaluation_id
+            eval_id = current_evaluation_id.get()
+            if eval_id and result is not None:
+                from src.core.audit_log import log_judge_call, log_sanitization
+                # Track call index per-evaluation via the LLMJudge instance
+                self._audit_call_index = getattr(self, "_audit_call_index", 0) + 1
+                await log_judge_call(
+                    evaluation_id=eval_id,
+                    call_index=self._audit_call_index,
+                    provider=result.provider or self.provider,
+                    model=getattr(result, "model", self.model),
+                    question=question,
+                    expected=expected,
+                    answer=answer,
+                    raw_response_text=getattr(result, "raw_response", ""),
+                    parsed_score=result.score,
+                    parsed_explanation=result.explanation,
+                    method=result.method,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    latency_ms=result.latency_ms,
+                )
+                # Sanitization event (only logged if had_detections)
+                await log_sanitization(
+                    evaluation_id=eval_id,
+                    judge_call_index=self._audit_call_index,
+                    sanitization_result=san,
+                )
+        except Exception as e:
+            logger.debug(f"Audit log skipped: {e}")
+
+        return result
+
+    async def _ajudge_inner(self, question: str, expected: str, answer: str, test_type: str) -> JudgeResult:
+        """Inner judge logic — extracted for QO-047 single-return audit hooking."""
         # Optimization: route simple test types directly to fuzzy scorer
         if test_type in FUZZY_ROUTABLE_TEST_TYPES:
             start = time.time()

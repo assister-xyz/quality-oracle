@@ -120,6 +120,7 @@ async def submit_evaluation(
     request: EvaluateRequest,
     background_tasks: BackgroundTasks,
     response: Response,
+    http_request: Request,
     api_key_doc: dict = Depends(get_api_key),
     x_payment: str | None = Header(None, alias="X-Payment"),
 ):
@@ -130,6 +131,13 @@ async def submit_evaluation(
     """
     tier = api_key_doc.get("tier", "free")
     key_hash = api_key_doc["_id"]
+
+    # QO-047: Capture caller identity (non-reversible hashes)
+    caller_api_key_hash = key_hash[:16] if key_hash else ""
+    caller_org = api_key_doc.get("owner_email", "")
+    caller_user_agent = http_request.headers.get("user-agent", "")[:200]
+    client_ip = http_request.client.host if http_request.client else ""
+    caller_ip_hash = hashlib.sha256(client_ip.encode()).hexdigest()[:16] if client_ip else ""
 
     # Check evaluation level is allowed for this tier
     if not is_eval_level_allowed(tier, request.level.value):
@@ -172,6 +180,13 @@ async def submit_evaluation(
         "callback_secret": request.callback_secret,
         "payment": payment_receipt.to_dict() if payment_receipt else None,
         "created_at": datetime.utcnow(),
+        # QO-047: Caller identity (non-reversible)
+        "caller_api_key_hash": caller_api_key_hash,
+        "caller_tier": tier,
+        "caller_org": caller_org,
+        "caller_user_agent": caller_user_agent,
+        "caller_ip_hash": caller_ip_hash,
+        "request_received_at": datetime.utcnow(),
     }
     await evaluations_col().insert_one(doc)
 
@@ -318,6 +333,14 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
     import time as _time
     eval_start = _time.time()
     try:
+        # QO-047: Set audit context for this eval — all downstream tool calls,
+        # judge calls, sanitization events, and probe executions will be linked
+        # to this evaluation_id via contextvars.
+        from src.core.mcp_client import current_evaluation_id, current_target_id, _call_index_counter
+        current_evaluation_id.set(evaluation_id)
+        current_target_id.set(request.target_url)
+        _call_index_counter.set(0)
+
         await evaluations_col().update_one(
             {"_id": evaluation_id},
             {"$set": {"status": EvalStatus.RUNNING.value, "progress_pct": 10}},

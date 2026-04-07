@@ -8,7 +8,15 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from src.storage.mongodb import scores_col
+from src.storage.mongodb import (
+    scores_col,
+    evaluations_col,
+    tool_calls_col,
+    judge_calls_col,
+    consensus_votes_col,
+    sanitization_events_col,
+    probe_executions_col,
+)
 from src.auth.dependencies import get_api_key
 
 logger = logging.getLogger(__name__)
@@ -292,3 +300,76 @@ async def _run_batch_evaluation(
         f"Batch job {job_id} completed: "
         f"{job['succeeded']} ok, {job['failed']} failed, {job['skipped']} skipped"
     )
+
+
+# ── QO-047: Audit Trail Endpoint ─────────────────────────────────────────────
+
+
+@router.get("/admin/eval/{evaluation_id}/audit")
+async def get_eval_audit_trail(
+    evaluation_id: str,
+    api_key_doc: dict = Depends(get_api_key),
+):
+    """Return the complete audit trail for an evaluation (QO-047).
+
+    Joins evaluation doc + tool_calls + judge_calls + consensus_votes
+    + sanitization_events + probe_executions for full debug capability.
+    Requires team or marketplace tier API key.
+    """
+    if api_key_doc.get("tier") not in ("marketplace", "team"):
+        raise HTTPException(
+            status_code=403,
+            detail="Team or marketplace tier required for audit trail access",
+        )
+
+    # Fetch evaluation
+    eval_doc = await evaluations_col().find_one({"_id": evaluation_id})
+    if not eval_doc:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
+
+    # Fetch all linked audit records (parallel-friendly via async iteration)
+    tool_calls = await tool_calls_col().find(
+        {"evaluation_id": evaluation_id}
+    ).sort("call_index", 1).to_list(1000)
+
+    judge_calls = await judge_calls_col().find(
+        {"evaluation_id": evaluation_id}
+    ).sort("call_index", 1).to_list(500)
+
+    consensus_votes = await consensus_votes_col().find(
+        {"evaluation_id": evaluation_id}
+    ).to_list(500)
+
+    sanitization_events = await sanitization_events_col().find(
+        {"evaluation_id": evaluation_id}
+    ).to_list(500)
+
+    probe_executions = await probe_executions_col().find(
+        {"evaluation_id": evaluation_id}
+    ).to_list(200)
+
+    # Strip _id fields (Mongo ObjectIds aren't JSON-serializable)
+    eval_doc.pop("_id", None)
+    for collection_list in (tool_calls, judge_calls, consensus_votes, sanitization_events, probe_executions):
+        for doc in collection_list:
+            doc.pop("_id", None)
+
+    return {
+        "evaluation": eval_doc,
+        "audit_summary": {
+            "tool_calls_count": len(tool_calls),
+            "judge_calls_count": len(judge_calls),
+            "consensus_votes_count": len(consensus_votes),
+            "sanitization_events_count": len(sanitization_events),
+            "probe_executions_count": len(probe_executions),
+            "total_audit_records": (
+                len(tool_calls) + len(judge_calls) + len(consensus_votes)
+                + len(sanitization_events) + len(probe_executions)
+            ),
+        },
+        "tool_calls": tool_calls,
+        "judge_calls": judge_calls,
+        "consensus_votes": consensus_votes,
+        "sanitization_events": sanitization_events,
+        "probe_executions": probe_executions,
+    }
