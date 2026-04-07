@@ -187,12 +187,22 @@ async def get_batch_status(
 async def _run_batch_evaluation(
     job_id: str, urls: list, level: int, force: bool
 ):
-    """Run batch evaluations in background."""
-    from src.core.mcp_client import get_server_manifest, evaluate_server
+    """Run batch evaluations in background.
+
+    QO-047 fix: each batch eval now creates a real evaluation_id, inserts
+    into quality__evaluations, and sets the audit contextvars so all
+    downstream tool/judge/probe calls are captured by the audit trail.
+    """
+    from uuid import uuid4
+    from src.core.mcp_client import (
+        get_server_manifest, evaluate_server,
+        current_evaluation_id, current_target_id, _call_index_counter,
+    )
     from src.core.evaluator import Evaluator
     from src.core.llm_judge import LLMJudge
     from src.core.quick_scan import quick_scan
     from src.config import settings
+    from src.storage.mongodb import evaluations_col
 
     job = _batch_jobs[job_id]
 
@@ -239,6 +249,29 @@ async def _run_batch_evaluation(
                     job["succeeded"] += 1
             else:
                 # L2 functional eval
+                # QO-047: create a real evaluation record so audit trail works
+                evaluation_id = str(uuid4())
+                now = datetime.now(timezone.utc)
+                await evaluations_col().insert_one({
+                    "_id": evaluation_id,
+                    "target_id": url,
+                    "target_type": "mcp_server",
+                    "target_url": url,
+                    "status": "running",
+                    "level": 2,
+                    "evaluation_version": "v1.0",
+                    "eval_mode": "certified",
+                    "created_at": now,
+                    "source": "batch_api",
+                    "batch_job_id": job_id,
+                })
+
+                # QO-047: set audit contextvars so all downstream tool/judge
+                # calls are linked to this evaluation_id
+                current_evaluation_id.set(evaluation_id)
+                current_target_id.set(url)
+                _call_index_counter.set(0)
+
                 manifest = await get_server_manifest(url)
                 tool_responses = await evaluate_server(url)
 
@@ -254,13 +287,30 @@ async def _run_batch_evaluation(
                 result["status"] = "success"
                 result["score"] = eval_result.overall_score
                 result["tier"] = eval_result.tier
+                result["evaluation_id"] = evaluation_id
 
-                # Save to DB
-                now = datetime.now(timezone.utc)
+                completed_at = datetime.now(timezone.utc)
                 dimensions = {}
                 if eval_result.dimensions:
                     dimensions = {k: v["score"] for k, v in eval_result.dimensions.items()}
 
+                # Mark evaluation as completed
+                await evaluations_col().update_one(
+                    {"_id": evaluation_id},
+                    {"$set": {
+                        "status": "completed",
+                        "completed_at": completed_at,
+                        "scores": {
+                            "overall_score": eval_result.overall_score,
+                            "tier": eval_result.tier,
+                            "confidence": eval_result.confidence,
+                            "dimensions": dimensions,
+                            "tool_scores": eval_result.tool_scores,
+                        },
+                    }},
+                )
+
+                # Update score record with last_evaluation_id (so audit lookup works)
                 await scores_col().update_one(
                     {"target_id": url},
                     {
@@ -271,13 +321,14 @@ async def _run_batch_evaluation(
                             "tier": eval_result.tier,
                             "confidence": eval_result.confidence,
                             "evaluation_version": "v1.0",
-                            "last_evaluated_at": now,
+                            "last_evaluated_at": completed_at,
+                            "last_evaluation_id": evaluation_id,
                             "tool_scores": eval_result.tool_scores,
                             "dimensions": dimensions,
                             "source": "batch_api",
                         },
                         "$inc": {"evaluation_count": 1},
-                        "$setOnInsert": {"first_evaluated_at": now},
+                        "$setOnInsert": {"first_evaluated_at": completed_at},
                     },
                     upsert=True,
                 )
