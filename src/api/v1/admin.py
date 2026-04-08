@@ -105,6 +105,11 @@ class BatchEvaluateRequest(BaseModel):
     urls: List[str]
     level: int = 2
     force: bool = False
+    timeout_seconds: Optional[int] = None  # QO-050: per-server cap (default 180)
+
+
+# QO-050: Hard cap per server in batch eval (prevents 1 slow URL hanging entire batch)
+BATCH_PER_SERVER_TIMEOUT_DEFAULT = 180
 
 
 class BatchJobStatus(BaseModel):
@@ -152,7 +157,12 @@ async def batch_evaluate(
     }
 
     background_tasks.add_task(
-        _run_batch_evaluation, job_id, req.urls, req.level, req.force
+        _run_batch_evaluation,
+        job_id,
+        req.urls,
+        req.level,
+        req.force,
+        req.timeout_seconds or BATCH_PER_SERVER_TIMEOUT_DEFAULT,
     )
 
     return {"job_id": job_id, "total": len(req.urls), "status": "running"}
@@ -185,13 +195,18 @@ async def get_batch_status(
 
 
 async def _run_batch_evaluation(
-    job_id: str, urls: list, level: int, force: bool
+    job_id: str, urls: list, level: int, force: bool,
+    per_server_timeout: int = BATCH_PER_SERVER_TIMEOUT_DEFAULT,
 ):
     """Run batch evaluations in background.
 
     QO-047 fix: each batch eval now creates a real evaluation_id, inserts
     into quality__evaluations, and sets the audit contextvars so all
     downstream tool/judge/probe calls are captured by the audit trail.
+
+    QO-050: each batch eval is wrapped in asyncio.wait_for() with
+    per_server_timeout (default 180s) so a single slow MCP server cannot
+    hang the entire batch.
     """
     from uuid import uuid4
     from src.core.mcp_client import (
@@ -272,16 +287,24 @@ async def _run_batch_evaluation(
                 current_target_id.set(url)
                 _call_index_counter.set(0)
 
-                manifest = await get_server_manifest(url)
-                tool_responses = await evaluate_server(url)
+                # QO-050: Wrap entire eval in per-server timeout to prevent hangs
+                manifest = await asyncio.wait_for(
+                    get_server_manifest(url), timeout=30
+                )
+                tool_responses = await asyncio.wait_for(
+                    evaluate_server(url), timeout=per_server_timeout
+                )
 
                 evaluator = Evaluator(llm_judge=judge)
-                eval_result = await evaluator.evaluate_full(
-                    target_id=url,
-                    server_url=url,
-                    tool_responses=tool_responses,
-                    manifest=manifest,
-                    run_safety=True,
+                eval_result = await asyncio.wait_for(
+                    evaluator.evaluate_full(
+                        target_id=url,
+                        server_url=url,
+                        tool_responses=tool_responses,
+                        manifest=manifest,
+                        run_safety=True,
+                    ),
+                    timeout=per_server_timeout,
                 )
 
                 result["status"] = "success"
@@ -334,6 +357,27 @@ async def _run_batch_evaluation(
                 )
                 job["succeeded"] += 1
 
+        except asyncio.TimeoutError:
+            # QO-050: per-server timeout
+            result["status"] = "error"
+            result["error"] = f"timeout after {per_server_timeout}s"
+            job["failed"] += 1
+            logger.warning(f"Batch eval TIMEOUT for {url} after {per_server_timeout}s")
+            # Mark eval doc as failed for audit trail (if eval_id was created)
+            try:
+                if 'evaluation_id' in locals():
+                    from src.storage.mongodb import evaluations_col
+                    await evaluations_col().update_one(
+                        {"_id": evaluation_id},
+                        {"$set": {
+                            "status": "failed",
+                            "completed_at": datetime.now(timezone.utc),
+                            "error": f"timeout after {per_server_timeout}s",
+                        }},
+                    )
+                    result["evaluation_id"] = evaluation_id
+            except Exception as e:
+                logger.warning(f"Failed to mark eval as failed: {e}")
         except Exception as e:
             result["status"] = "error"
             result["error"] = str(e)[:300]
