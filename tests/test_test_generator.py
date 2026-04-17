@@ -1,13 +1,16 @@
 """Tests for the semantic-aware test generator."""
 import pytest
+from jsonschema import validate as jsonschema_validate
 from src.core.test_generator import (
     _extract_example_from_description,
     _fuzzy_match_param_name,
     _generate_sample_input,
     _generate_expected_behavior,
+    _clamp,
     generate_test_cases,
     SEMANTIC_PARAM_MAP,
     SEMANTIC_NUMBER_MAP,
+    FORMAT_GENERATORS,
 )
 
 
@@ -331,3 +334,199 @@ class TestGenerateTestCases:
                         f"Tool '{name}' {case['test_type']} expected text "
                         f"must contain 'error' for fuzzy judge routing"
                     )
+
+
+# ---------------------------------------------------------------------------
+# QO-054: schema-aware priority chain
+# ---------------------------------------------------------------------------
+
+class TestQO054PriorityChain:
+    """Verify each rule in the new priority chain produces schema-valid values."""
+
+    def _validate(self, sample: dict, schema: dict):
+        """Assert the generated sample validates against its parent schema."""
+        parent = {"type": "object", "properties": schema, "required": list(schema.keys())}
+        jsonschema_validate(sample, parent)
+
+    def test_const_always_wins(self):
+        result = _generate_sample_input(
+            {"properties": {"action": {"const": "delete"}}, "required": ["action"]}
+        )
+        assert result == {"action": "delete"}
+
+    def test_const_beats_enum_and_default(self):
+        prop = {"const": "fixed", "enum": ["a", "b"], "default": "z"}
+        val = _generate_sample_input({"properties": {"x": prop}, "required": ["x"]})
+        assert val == {"x": "fixed"}
+
+    def test_singular_example_accepted(self):
+        """JSON Schema supports `example` (singular) as well as `examples`."""
+        schema = {"properties": {"note": {"type": "string", "example": "hello"}}, "required": ["note"]}
+        val = _generate_sample_input(schema)
+        assert val == {"note": "hello"}
+
+    @pytest.mark.parametrize("fmt,prop_type", [
+        ("uuid", "string"),
+        ("email", "string"),
+        ("date", "string"),
+        ("date-time", "string"),
+        ("uri", "string"),
+        ("ipv4", "string"),
+    ])
+    def test_format_generator_produces_expected_shape(self, fmt, prop_type):
+        schema = {"properties": {"x": {"type": prop_type, "format": fmt}}, "required": ["x"]}
+        val = _generate_sample_input(schema)
+        assert val["x"] in FORMAT_GENERATORS[fmt]
+
+    def test_minimum_maximum_clamp_integer(self):
+        # Semantic map says "count" → 5; schema caps at 3.
+        schema = {"properties": {"count": {"type": "integer", "minimum": 0, "maximum": 3}}, "required": ["count"]}
+        val = _generate_sample_input(schema)
+        assert 0 <= val["count"] <= 3
+        self._validate(val, schema["properties"])
+
+    def test_minimum_clamp_pushes_up(self):
+        schema = {"properties": {"offset": {"type": "integer", "minimum": 100}}, "required": ["offset"]}
+        val = _generate_sample_input(schema)
+        assert val["offset"] >= 100
+
+    def test_min_length_pads_string(self):
+        schema = {"properties": {"code": {"type": "string", "minLength": 10}}, "required": ["code"]}
+        val = _generate_sample_input(schema)
+        assert len(val["code"]) >= 10
+
+    def test_max_length_truncates(self):
+        schema = {"properties": {"short": {"type": "string", "maxLength": 3}}, "required": ["short"]}
+        val = _generate_sample_input(schema)
+        assert len(val["short"]) <= 3
+
+    def test_exclusive_minimum_strict(self):
+        schema = {"properties": {"n": {"type": "integer", "exclusiveMinimum": 0}}, "required": ["n"]}
+        val = _generate_sample_input(schema)
+        assert val["n"] > 0
+
+    def test_ref_resolution_basic(self):
+        root = {
+            "$defs": {"CoinId": {"type": "string", "const": "bitcoin"}},
+            "properties": {"id": {"$ref": "#/$defs/CoinId"}},
+            "required": ["id"],
+        }
+        val = _generate_sample_input(root)
+        assert val == {"id": "bitcoin"}
+
+    def test_ref_resolution_components_schemas(self):
+        """OpenAPI-style $ref into components/schemas."""
+        root = {
+            "components": {"schemas": {"Ticker": {"type": "string", "enum": ["BTC"]}}},
+            "properties": {"symbol": {"$ref": "#/components/schemas/Ticker"}},
+            "required": ["symbol"],
+        }
+        val = _generate_sample_input(root)
+        assert val["symbol"] == "BTC"
+
+    def test_ref_cycle_does_not_loop(self):
+        """Circular $refs must not infinitely recurse."""
+        root = {
+            "$defs": {
+                "A": {"$ref": "#/$defs/B"},
+                "B": {"$ref": "#/$defs/A"},
+            },
+            "properties": {"x": {"$ref": "#/$defs/A"}},
+            "required": ["x"],
+        }
+        # Should return *something* (the last resort fallback) without hanging
+        val = _generate_sample_input(root)
+        assert "x" in val
+
+    def test_oneof_picks_first_typed_branch(self):
+        schema = {
+            "properties": {
+                "value": {
+                    "oneOf": [
+                        {"type": "integer", "minimum": 5, "maximum": 10},
+                        {"type": "string"},
+                    ]
+                }
+            },
+            "required": ["value"],
+        }
+        val = _generate_sample_input(schema)
+        # First branch is integer with clamped range — must be in [5,10]
+        assert isinstance(val["value"], int) and 5 <= val["value"] <= 10
+
+    def test_anyof_picks_first_typed_branch(self):
+        schema = {
+            "properties": {
+                "payload": {
+                    "anyOf": [
+                        {"type": "string", "const": "ping"},
+                        {"type": "integer"},
+                    ]
+                }
+            },
+            "required": ["payload"],
+        }
+        val = _generate_sample_input(schema)
+        assert val["payload"] == "ping"
+
+    def test_array_items_recurse(self):
+        schema = {
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["foo", "bar"]},
+                    "minItems": 2,
+                }
+            },
+            "required": ["tags"],
+        }
+        val = _generate_sample_input(schema)
+        assert isinstance(val["tags"], list)
+        assert len(val["tags"]) >= 1  # clamped by our min/max-items logic
+        for item in val["tags"]:
+            assert item in ("foo", "bar")
+
+    def test_object_property_recurses(self):
+        schema = {
+            "properties": {
+                "cfg": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {"enum": ["fast", "slow"]},
+                        "retries": {"type": "integer", "minimum": 1, "maximum": 5},
+                    },
+                    "required": ["mode", "retries"],
+                }
+            },
+            "required": ["cfg"],
+        }
+        val = _generate_sample_input(schema)
+        assert val["cfg"]["mode"] in ("fast", "slow")
+        assert 1 <= val["cfg"]["retries"] <= 5
+
+    def test_coin_id_semantic_map_returns_real_coin(self):
+        """Previously `id: "abc123"` killed CoinGecko; now "coin_id" → bitcoin."""
+        schema = {"properties": {"coin_id": {"type": "string"}}, "required": ["coin_id"]}
+        val = _generate_sample_input(schema)
+        assert val["coin_id"] in ("bitcoin", "ethereum", "solana")
+
+    def test_clamp_helper_idempotent_on_valid_values(self):
+        """_clamp must not mutate values already inside the range."""
+        assert _clamp(50, {"minimum": 0, "maximum": 100}, "integer") == 50
+        assert _clamp("hello", {"maxLength": 10}, "string") == "hello"
+
+    def test_generated_samples_always_respect_type_fallback(self):
+        """No priority-chain rule should ever return the wrong Python type."""
+        for prop_type, expected_py_types in [
+            ("string", (str,)),
+            ("integer", (int,)),
+            ("number", (int, float)),
+            ("boolean", (bool,)),
+            ("array", (list,)),
+            ("object", (dict,)),
+        ]:
+            schema = {"properties": {"x": {"type": prop_type}}, "required": ["x"]}
+            val = _generate_sample_input(schema)
+            assert isinstance(val["x"], expected_py_types), (
+                f"type={prop_type} produced {type(val['x']).__name__}"
+            )

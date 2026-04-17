@@ -1,7 +1,7 @@
 """Tests for the evaluation engine."""
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from src.core.evaluator import Evaluator, ManifestValidationResult, EvaluationResult
+from src.core.evaluator import Evaluator, EvaluationResult
 from src.core.llm_judge import LLMJudge, JudgeResult
 from src.core.question_pools import determine_tier
 
@@ -200,3 +200,65 @@ class TestStyleInFunctionalEval:
         assert jr["score"] < jr["raw_score"], "Adjusted score should be less than raw"
         assert result.style_report is not None
         assert result.style_report["penalized_responses"] == 1
+
+
+# ── QO-054: input_quality_rate metric ──────────────────────────────────────
+
+
+class TestQO054InputQualityMetric:
+    """Verify the input_quality_rate metric is computed and surfaced
+    correctly on EvaluationResult."""
+
+    def test_evaluation_result_defaults(self):
+        """Fresh EvaluationResult has zero counts and None rate."""
+        r = EvaluationResult()
+        assert r.input_quality_rate is None
+        assert r.total_tool_calls == 0
+        assert r.errored_tool_calls == 0
+        # to_dict must not emit an input_quality key when unset
+        assert "input_quality" not in r.to_dict()
+
+    def test_evaluation_result_to_dict_includes_metric_when_set(self):
+        r = EvaluationResult()
+        r.input_quality_rate = 0.75
+        r.total_tool_calls = 20
+        r.errored_tool_calls = 5
+        d = r.to_dict()
+        assert d["input_quality"] == {
+            "rate": 0.75,
+            "total_calls": 20,
+            "errored_calls": 5,
+        }
+
+    @pytest.mark.asyncio
+    async def test_evaluate_full_computes_metric(self):
+        """After evaluate_full runs, input_quality_rate reflects the is_error
+        distribution of the tool_responses we passed in."""
+        from src.core.evaluator import Evaluator
+        from src.core.llm_judge import JudgeResult
+
+        mock_judge = MagicMock()
+        mock_judge.ajudge = AsyncMock(return_value=JudgeResult(
+            score=70, explanation="ok", method="fuzzy",
+        ))
+
+        # 4 total calls, 1 errored → rate = 0.75
+        tool_responses = {
+            "tool_a": [
+                {"question": "Q1", "expected": "A1", "answer": "ok", "is_error": False, "latency_ms": 10},
+                {"question": "Q2", "expected": "A2", "answer": "ok", "is_error": False, "latency_ms": 12},
+            ],
+            "tool_b": [
+                {"question": "Q3", "expected": "A3", "answer": "err", "is_error": True, "latency_ms": 8},
+                {"question": "Q4", "expected": "A4", "answer": "ok", "is_error": False, "latency_ms": 15},
+            ],
+        }
+        evaluator = Evaluator(mock_judge, paraphrase=False)
+        result = await evaluator.evaluate_full(
+            target_id="t", server_url="http://t", tool_responses=tool_responses,
+            manifest={"tools": [{"name": "tool_a"}, {"name": "tool_b"}]},
+            run_safety=False, run_consistency=False,
+        )
+        assert result.total_tool_calls == 4
+        assert result.errored_tool_calls == 1
+        assert result.input_quality_rate == 0.75
