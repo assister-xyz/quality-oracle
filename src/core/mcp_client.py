@@ -536,6 +536,27 @@ async def manifest_and_evaluate(
                 f"with {len(tools)} tools via {transport_used}"
             )
 
+            # QO-055: Discovery phase — run list-like tools first to harvest
+            # real IDs. Tools that follow a list→detail pattern (Peek,
+            # Browserbase, CoinGecko, Javadocs) can't be evaluated with
+            # schema-only inputs because the `id` is an opaque server-
+            # assigned value. Discovered IDs flow into `test_cases` so
+            # dependent tools receive real inputs.
+            from src.core.id_discovery import discover_ids
+            try:
+                discovered_ids = await discover_ids(session, tools)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:  # noqa: BLE001
+                logger.warning(f"[discovery] phase failed for {server_url}: {e}")
+                discovered_ids = {}
+            if discovered_ids:
+                logger.info(
+                    f"[discovery] {server_url}: harvested "
+                    f"{sum(len(v) for v in discovered_ids.values())} IDs "
+                    f"across {len(discovered_ids)} pools"
+                )
+
             # Run functional eval on the SAME session — no reconnect.
             # QO-049: commit progress per-case (not per-tool) so when a
             # server cancels its stream mid-loop (CoinGecko, Peek, some
@@ -547,7 +568,12 @@ async def manifest_and_evaluate(
             # CancelledError rather than a plain Exception. Always
             # re-raise KeyboardInterrupt / SystemExit / true TimeoutError
             # so legitimate cancellation semantics still propagate.
-            test_cases = generate_test_cases(tools, test_types=test_types, max_tools=max_tools)
+            test_cases = generate_test_cases(
+                tools,
+                test_types=test_types,
+                max_tools=max_tools,
+                discovered_ids=discovered_ids,
+            )
             tool_responses = {}
             for tool_name, cases in test_cases.items():
                 tool_responses[tool_name] = []

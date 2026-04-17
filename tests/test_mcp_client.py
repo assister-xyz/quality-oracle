@@ -282,6 +282,78 @@ async def test_manifest_and_evaluate_uses_single_session():
 
 
 @pytest.mark.asyncio
+async def test_discovery_phase_feeds_detail_tool():
+    """QO-055 integration: a list_* tool's response IDs flow into the
+    detail tool's input, replacing the semantic fallback.
+
+    Schema: one `list_experiences` tool (no required params) returns
+    `[{"id": "exp-001"}]`; one `experience_details(id)` tool requires
+    id. The test asserts the detail tool receives `exp-001` rather than
+    the semantic default `abc123`.
+    """
+    list_tool = _make_mock_tool(
+        name="list_experiences",
+        description="List all available experiences",
+        schema={"type": "object", "properties": {}},
+    )
+    detail_tool = _make_mock_tool(
+        name="experience_details",
+        description="Get detail for an experience",
+        schema={
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    )
+    tools_result = MagicMock()
+    tools_result.tools = [list_tool, detail_tool]
+
+    mock_session = AsyncMock()
+    mock_session.initialize = AsyncMock(return_value=_make_mock_init_result())
+    mock_session.list_tools = AsyncMock(return_value=tools_result)
+
+    list_response = _make_mock_result('[{"id": "exp-001"}, {"id": "exp-002"}]')
+    detail_response = _make_mock_result('{"ok": true}')
+
+    detail_call_args: list = []
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "experience_details":
+            detail_call_args.append(dict(arguments))
+            return detail_response
+        return list_response
+
+    mock_session.call_tool = AsyncMock(side_effect=call_tool_side_effect)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_http = AsyncMock()
+    mock_http.head = AsyncMock(return_value=mock_response)
+    mock_http.post = AsyncMock(return_value=mock_response)
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=None)
+
+    p1, p2, p3 = _patch_all_transports_with_session(mock_session)
+    with p1, p2, p3, patch("src.core.mcp_client.httpx.AsyncClient", return_value=mock_http):
+        manifest, tool_responses = await manifest_and_evaluate(
+            "http://localhost:8010/sse"
+        )
+
+    # The detail tool must have been called with discovered IDs on the
+    # happy path(s). Edge-case / boundary / error-handling cases
+    # intentionally send empty or malformed inputs — filter those out.
+    assert detail_call_args, "experience_details was never invoked"
+    happy_calls = [
+        a for a in detail_call_args
+        if a.get("id") and len(str(a.get("id", ""))) < 100 and a.get("id") != ""
+    ]
+    assert happy_calls, "no happy-path detail calls captured"
+    assert all(
+        a.get("id") in {"exp-001", "exp-002"} for a in happy_calls
+    ), f"happy-path detail calls used non-discovered ids: {happy_calls}"
+
+
+@pytest.mark.asyncio
 async def test_per_tool_failure_does_not_cancel_evaluation():
     """QO-054: a raising tool call must not kill the rest of the evaluation.
 

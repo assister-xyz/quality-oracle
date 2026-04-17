@@ -276,25 +276,38 @@ def _clamp(value, prop: dict, prop_type: str):
     return value
 
 
-def _generate_sample_input(schema: dict, variation: int = 0, root_schema: Optional[dict] = None) -> dict:
+def _generate_sample_input(
+    schema: dict,
+    variation: int = 0,
+    root_schema: Optional[dict] = None,
+    discovered_ids: Optional[Dict[str, List[str]]] = None,
+    tool_name: Optional[str] = None,
+) -> dict:
     """
     Generate sample input data from a JSON schema.
 
     QO-054 priority chain per parameter (first match wins):
-      0. $ref         — resolve against root_schema (up to 3 levels deep)
-      1. const        — use verbatim
-      2. enum         — enum[variation % len]
+      0. $ref                — resolve against root_schema (up to 3 levels deep)
+      1. const               — use verbatim
+      2. enum                — enum[variation % len]
       3. default
-      4. examples     — also accepts singular "example"
-      5. format       — FORMAT_GENERATORS lookup (uuid/email/date-time/…)
-      6. description  — regex-extracted phrase
-      7. oneOf/anyOf  — recurse into the first typed branch
-      8. semantic map — exact → fuzzy suffix match
+      4. examples            — also accepts singular "example"
+      5. format              — FORMAT_GENERATORS lookup (uuid/email/date-time/…)
+      5.5 (QO-055) discovered_ids — real IDs harvested from list-tools,
+                              used only for id-like parameters.
+      6. description         — regex-extracted phrase
+      7. oneOf/anyOf         — recurse into the first typed branch
+      8. semantic map        — exact → fuzzy suffix match
       9. type fallback with min/max/length clamping
       10. f"test_{key}" last resort
 
     All numeric and string values are passed through `_clamp` to respect
     minimum/maximum/minLength/maxLength constraints.
+
+    QO-055: when `discovered_ids` is provided (a dict of
+    `param-name → [values]` harvested from a prior discovery pass), any
+    id-like parameter will prefer a discovered value over the semantic
+    fallback. This closes the "opaque ID" gap for list → detail flows.
     """
     # The first call establishes the root for $ref resolution; recursion
     # (e.g. for object-typed properties) inherits it.
@@ -314,7 +327,9 @@ def _generate_sample_input(schema: dict, variation: int = 0, root_schema: Option
             continue  # Only fill required + a few optional
 
         prop_type = prop.get("type", "string") if isinstance(prop, dict) else "string"
-        value = _resolve_param_value(key, prop, prop_type, variation, root_schema)
+        value = _resolve_param_value(
+            key, prop, prop_type, variation, root_schema, discovered_ids, tool_name
+        )
         sample[key] = value
 
     return sample
@@ -326,6 +341,8 @@ def _resolve_param_value(
     prop_type: str,
     variation: int,
     root_schema: Optional[dict] = None,
+    discovered_ids: Optional[Dict[str, List[str]]] = None,
+    tool_name: Optional[str] = None,
 ):
     """Resolve a single parameter value using the QO-054 priority chain."""
     if not isinstance(prop, dict):
@@ -357,6 +374,14 @@ def _resolve_param_value(
         candidates = FORMAT_GENERATORS[fmt]
         return _clamp(candidates[variation % len(candidates)], prop, "string")
 
+    # 5.5. QO-055 — real IDs harvested from list-tools win for id-like params.
+    # Only fires for id-shaped parameter names so a regular "query" or "text"
+    # still goes through semantic-map fallback.
+    if discovered_ids and prop_type in ("string", None):
+        pool = _pick_discovered_pool(key, discovered_ids, tool_name)
+        if pool:
+            return _clamp(pool[variation % len(pool)], prop, "string")
+
     # 6. Extract from description (only for variation=0; others fall through to
     #    semantic maps which have multiple values for variation diversity)
     if variation == 0:
@@ -382,7 +407,9 @@ def _resolve_param_value(
             resolved = _resolve_ref(branch, root_schema or {}) if "$ref" in branch else branch
             branch_type = resolved.get("type")
             if branch_type in ("string", "integer", "number", "boolean", "array", "object"):
-                return _resolve_param_value(key, resolved, branch_type, variation, root_schema)
+                return _resolve_param_value(
+                    key, resolved, branch_type, variation, root_schema, discovered_ids
+                )
 
     # 8 & 9. Semantic map / type fallback
     if prop_type == "string":
@@ -399,7 +426,7 @@ def _resolve_param_value(
             item_type = items.get("type")
             if item_type in ("string", "integer", "number", "boolean", "array", "object"):
                 item = _resolve_param_value(
-                    f"{key}_item", items, item_type, variation, root_schema
+                    f"{key}_item", items, item_type, variation, root_schema, discovered_ids
                 )
                 min_items = max(1, prop.get("minItems", 1))
                 max_items = prop.get("maxItems", min_items)
@@ -412,10 +439,54 @@ def _resolve_param_value(
                 {"properties": prop["properties"], "required": prop.get("required", [])},
                 variation,
                 root_schema,
+                discovered_ids,
             )
         return {}
 
     return f"test_{key}"
+
+
+def _pick_discovered_pool(
+    key: str,
+    discovered_ids: Dict[str, List[str]],
+    tool_name: Optional[str] = None,
+) -> Optional[List[str]]:
+    """Pick the most specific discovered-ID pool for this parameter name.
+
+    Match priority:
+      1. Exact parameter-name match (e.g. `coin_id` → `coin_id` pool)
+      2. Resource inferred from the *tool* name (e.g. `experience_details`
+         → look for `experience_id` / `experience` pools). This is the
+         QO-055 fix for servers with multiple list-tools where a generic
+         `id` pool would be cross-contaminated.
+      3. None → caller falls through to semantic map.
+
+    Deliberately does NOT fall back to a generic `id` bucket anymore —
+    that caused `experience_details(id)` to receive tag IDs harvested
+    from `list_tags`. Honest failure is better than misclassified success.
+    """
+    from src.core.id_discovery import _looks_like_id_name, _resource_key_from_tool_name
+    if not _looks_like_id_name(key):
+        return None
+    k = key.lower()
+    # 1. Exact parameter-name match
+    if k in discovered_ids and discovered_ids[k]:
+        return discovered_ids[k]
+    # Fuzzy: "coinId" → "coin_id"
+    normalized = k.replace("-", "_")
+    if normalized in discovered_ids and discovered_ids[normalized]:
+        return discovered_ids[normalized]
+    # 2. Resource inferred from the *tool* name (e.g. `experience_details`
+    #    → resource `experience` → prefer `experience_id` pool).
+    if tool_name:
+        tool_resource = _resource_key_from_tool_name(tool_name)
+        if tool_resource:
+            # Try `<resource>_id` then `<resource>` (both are written by
+            # id_discovery.discover_ids for a recognised list tool).
+            for candidate in (f"{tool_resource}_id", tool_resource):
+                if candidate in discovered_ids and discovered_ids[candidate]:
+                    return discovered_ids[candidate]
+    return None
 
 
 def _resolve_string_param(key: str, variation: int) -> str:
@@ -511,6 +582,7 @@ def generate_test_cases(
     tools: List[dict],
     test_types: Optional[Set[str]] = None,
     max_tools: Optional[int] = None,
+    discovered_ids: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, List[dict]]:
     """
     Generate test cases from MCP server tool definitions.
@@ -519,6 +591,10 @@ def generate_test_cases(
         tools: List of tool definitions with name, description, inputSchema
         test_types: If provided, only generate these test types (e.g. {"happy_path", "error_handling"})
         max_tools: If provided, limit to first N tools
+        discovered_ids: QO-055. Map of param-name → [values] harvested
+            from list-tools. When present, id-like parameters prefer a
+            discovered value over the semantic fallback. Other params
+            are unaffected.
 
     Returns:
         Dict of tool_name -> list of test cases {question, expected, input_data, test_type}
@@ -536,7 +612,9 @@ def generate_test_cases(
 
         # --- Happy path 1: primary realistic input ---
         if description:
-            input_data_0 = _generate_sample_input(schema, variation=0)
+            input_data_0 = _generate_sample_input(
+                schema, variation=0, discovered_ids=discovered_ids, tool_name=name,
+            )
             cases.append({
                 "question": f"Use the '{name}' tool: {description}",
                 "expected": _generate_expected_behavior(name, description, input_data_0),
@@ -546,9 +624,13 @@ def generate_test_cases(
 
         # --- Happy path 2: variation with different values ---
         if description:
-            input_data_1 = _generate_sample_input(schema, variation=1)
+            input_data_1 = _generate_sample_input(
+                schema, variation=1, discovered_ids=discovered_ids, tool_name=name,
+            )
             # Only add if inputs actually differ from variation 0
-            input_data_0_check = _generate_sample_input(schema, variation=0)
+            input_data_0_check = _generate_sample_input(
+                schema, variation=0, discovered_ids=discovered_ids, tool_name=name,
+            )
             if input_data_1 != input_data_0_check:
                 cases.append({
                     "question": f"Use the '{name}' tool with different inputs: {description}",
@@ -580,7 +662,9 @@ def generate_test_cases(
 
         # --- Boundary: long string input ---
         if string_params:
-            long_input = _generate_sample_input(schema, variation=0)
+            long_input = _generate_sample_input(
+                schema, variation=0, discovered_ids=discovered_ids, tool_name=name,
+            )
             long_input[string_params[0]] = "a" * 500
             cases.append({
                 "question": f"Call '{name}' with a very long string input for '{string_params[0]}'",
@@ -595,7 +679,9 @@ def generate_test_cases(
             if v.get("type") in ("integer", "number")
         ]
         if number_params:
-            coercion_input = _generate_sample_input(schema, variation=0)
+            coercion_input = _generate_sample_input(
+                schema, variation=0, discovered_ids=discovered_ids, tool_name=name,
+            )
             coercion_input[number_params[0]] = "not_a_number"
             cases.append({
                 "question": f"Call '{name}' with a string '{number_params[0]}' instead of a number",
