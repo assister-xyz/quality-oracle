@@ -164,6 +164,25 @@ async def save_score(target_id: str, eval_result, manifest: dict, server_entry: 
 # ── Single Server Evaluation ────────────────────────────────────────────────
 
 
+def _classify_connection_error(msg: str) -> tuple[str, bool]:
+    """Classify a ConnectionError message and say whether a 5xx retry makes sense.
+
+    Returns (error_type, retryable). Keeping this surface-level keeps the
+    error-type cardinality small so it's easy to aggregate across runs.
+    """
+    lowered = msg.lower()
+    if "dns" in lowered or "network error" in lowered or "nodename" in lowered:
+        return "dns", False
+    if "404" in msg or "endpoint not found" in lowered:
+        return "404", False
+    if "401" in msg or "403" in msg or "requires authentication" in lowered:
+        return "auth", False
+    for code in ("(500)", "(502)", "(503)", "(504)"):
+        if code in msg:
+            return f"server_{code.strip('()')}", True
+    return "connection", False
+
+
 async def evaluate_one(
     server: dict,
     level: str,
@@ -173,9 +192,16 @@ async def evaluate_one(
     idx: int,
     total: int,
     force: bool = False,
+    per_server_timeout: int = 180,
 ) -> dict:
-    """Evaluate a single server from the registry."""
-    from src.core.mcp_client import get_server_manifest, evaluate_server
+    """Evaluate a single server from the registry.
+
+    QO-049: every stage is timed and tagged (connect/manifest/tools/judge/save)
+    so failures have an actionable audit trail and the JSON report can be
+    aggregated by error_stage for post-mortems.
+    """
+    import traceback as _tb
+    from src.core.mcp_client import manifest_and_evaluate
     from src.core.evaluator import Evaluator
     from src.core.quick_scan import quick_scan
 
@@ -192,8 +218,12 @@ async def evaluate_one(
         "tools_count": 0,
         "error": None,
         "error_type": None,
+        "error_stage": None,
+        "traceback": None,
         "duration_ms": 0,
         "skipped_reason": None,
+        "stages": {},
+        "retried": False,
     }
 
     # Skip auth-required servers
@@ -214,6 +244,61 @@ async def evaluate_one(
             print(f"  [{idx}/{total}] SKIP {name} (already scored: {result['score']}/{result['tier']})")
             return result
 
+    async def _run_l2() -> None:
+        """One attempt at the full L2 pipeline. Stage failures set result
+        fields and re-raise so the outer retry loop can decide what to do.
+        """
+        # QO-049: single MCP session for manifest + functional eval. Prior
+        # two-session flow failed on servers that can't handshake twice
+        # back-to-back (Peek.com, Browserbase, CoinGecko); those now recover.
+        stage = "manifest_and_evaluate"
+        result["error_stage"] = stage
+        s = time.time()
+        manifest, tool_responses = await asyncio.wait_for(
+            manifest_and_evaluate(url), timeout=per_server_timeout
+        )
+        result["stages"]["manifest_and_evaluate_ms"] = int((time.time() - s) * 1000)
+        result["tools_count"] = len(manifest.get("tools", []))
+        total_cases = sum(len(v) for v in tool_responses.values())
+        result["stages"]["test_cases"] = total_cases
+        print(
+            f"  [{idx}/{total}] {name}: {result['tools_count']} tools, "
+            f"{total_cases} test cases via {manifest.get('transport', '?')}"
+        )
+
+        stage = "judge"
+        result["error_stage"] = stage
+        s = time.time()
+        evaluator = Evaluator(llm_judge=judge)
+        eval_result = await asyncio.wait_for(
+            evaluator.evaluate_full(
+                target_id=url,
+                server_url=url,
+                tool_responses=tool_responses,
+                manifest=manifest,
+                run_safety=True,
+            ),
+            timeout=per_server_timeout,
+        )
+        result["stages"]["judge_ms"] = int((time.time() - s) * 1000)
+
+        stage = "save"
+        result["error_stage"] = stage
+        s = time.time()
+        await save_score(url, eval_result, manifest, server)
+        result["stages"]["save_ms"] = int((time.time() - s) * 1000)
+
+        # Success — clear the error_stage we were tracking
+        result["error_stage"] = None
+        result["status"] = "success"
+        result["score"] = eval_result.overall_score
+        result["tier"] = eval_result.tier
+        result["confidence"] = round(eval_result.confidence, 2)
+        result["questions_asked"] = eval_result.questions_asked
+        result["tool_scores"] = eval_result.tool_scores
+        if eval_result.dimensions:
+            result["dimensions"] = {k: v["score"] for k, v in eval_result.dimensions.items()}
+
     async with semaphore:
         await rate_limiter.wait()
         start = time.time()
@@ -221,6 +306,7 @@ async def evaluate_one(
         try:
             if level == "quick":
                 # L1 quick scan -- no LLM, no DB storage needed
+                result["error_stage"] = "quick_scan"
                 scan_result = await quick_scan(url)
                 result["status"] = "success" if scan_result.reachable else "error"
                 result["score"] = scan_result.manifest_score
@@ -231,70 +317,56 @@ async def evaluate_one(
                     result["status"] = "error"
                     result["error"] = scan_result.error
                     result["error_type"] = "connection"
+                else:
+                    result["error_stage"] = None
                 print(f"  [{idx}/{total}] {'OK' if result['status'] == 'success' else 'FAIL'} {name}: score={result['score']}, tier={result['tier']}")
                 return result
 
-            # L2 verified evaluation
+            # L2 verified evaluation — attempt with one retry on transient 5xx
             print(f"  [{idx}/{total}] Evaluating {name}...")
-
-            # Get manifest
-            manifest = await get_server_manifest(url)
-            result["tools_count"] = len(manifest.get("tools", []))
-            print(f"  [{idx}/{total}] {name}: {result['tools_count']} tools via {manifest.get('transport', '?')}")
-
-            # Run functional eval
-            tool_responses = await evaluate_server(url)
-            total_cases = sum(len(v) for v in tool_responses.values())
-            print(f"  [{idx}/{total}] {name}: {total_cases} test cases executed")
-
-            evaluator = Evaluator(llm_judge=judge)
-            eval_result = await evaluator.evaluate_full(
-                target_id=url,
-                server_url=url,
-                tool_responses=tool_responses,
-                manifest=manifest,
-                run_safety=True,
-            )
-
-            result["status"] = "success"
-            result["score"] = eval_result.overall_score
-            result["tier"] = eval_result.tier
-            result["confidence"] = round(eval_result.confidence, 2)
-            result["questions_asked"] = eval_result.questions_asked
-            result["duration_ms"] = int((time.time() - start) * 1000)
-            result["tool_scores"] = eval_result.tool_scores
-            if eval_result.dimensions:
-                result["dimensions"] = {
-                    k: v["score"] for k, v in eval_result.dimensions.items()
-                }
-
-            # Save to database
-            await save_score(url, eval_result, manifest, server)
+            for attempt in (1, 2):
+                try:
+                    await _run_l2()
+                    break
+                except ConnectionError as e:
+                    err_type, retryable = _classify_connection_error(str(e))
+                    if attempt == 1 and retryable:
+                        result["retried"] = True
+                        print(f"  [{idx}/{total}] RETRY {name} after transient {err_type}: {str(e)[:120]}")
+                        await asyncio.sleep(5)
+                        continue
+                    # Non-retryable or already retried — surface it
+                    result["status"] = "error"
+                    result["error"] = str(e)
+                    result["error_type"] = err_type
+                    raise
+                except asyncio.TimeoutError:
+                    result["status"] = "error"
+                    result["error"] = f"timeout after {per_server_timeout}s"
+                    result["error_type"] = "timeout"
+                    raise
+                except Exception as e:
+                    result["status"] = "error"
+                    result["error"] = str(e)[:300]
+                    result["error_type"] = "unknown"
+                    result["traceback"] = _tb.format_exc()
+                    raise
 
             dims = result.get("dimensions", {})
             dims_str = " ".join(f"{k}={v}" for k, v in dims.items()) if dims else ""
             print(f"  [{idx}/{total}] OK {name}: score={result['score']}, tier={result['tier']} {dims_str}")
 
         except ConnectionError as e:
-            result["status"] = "error"
-            result["error"] = str(e)
-            result["error_type"] = "connection"
-            result["duration_ms"] = int((time.time() - start) * 1000)
-            print(f"  [{idx}/{total}] FAIL {name}: {e}")
-
+            stage = result.get("error_stage") or "connect"
+            print(f"  [{idx}/{total}] FAIL {name} [{stage}/{result['error_type']}]: {str(e)[:160]}")
         except asyncio.TimeoutError:
-            result["status"] = "error"
-            result["error"] = "Evaluation timed out"
-            result["error_type"] = "timeout"
-            result["duration_ms"] = int((time.time() - start) * 1000)
-            print(f"  [{idx}/{total}] FAIL {name}: timeout")
-
+            stage = result.get("error_stage") or "unknown"
+            print(f"  [{idx}/{total}] FAIL {name} [{stage}/timeout]: {per_server_timeout}s")
         except Exception as e:
-            result["status"] = "error"
-            result["error"] = str(e)[:300]
-            result["error_type"] = "unknown"
+            stage = result.get("error_stage") or "unknown"
+            print(f"  [{idx}/{total}] FAIL {name} [{stage}/unknown]: {e}")
+        finally:
             result["duration_ms"] = int((time.time() - start) * 1000)
-            print(f"  [{idx}/{total}] FAIL {name}: {e}")
 
     return result
 
@@ -328,6 +400,8 @@ def save_reports(results: list, reports_dir: Path) -> tuple[Path, Path]:
                 sum(r["score"] for r in successful) / len(successful), 1
             ) if successful else 0,
             "failure_reasons": _count_failure_reasons(failed),
+            "failure_stages": _count_failure_stages(failed),
+            "retried_count": sum(1 for r in results if r.get("retried")),
             "skip_reasons": _count_skip_reasons(skipped),
             "results": results,
         }, f, indent=2, default=str)
@@ -363,11 +437,18 @@ def save_reports(results: list, reports_dir: Path) -> tuple[Path, Path]:
     if failed:
         lines.extend(["", "## Failed Servers", ""])
         by_reason = _count_failure_reasons(failed)
-        for reason, count in by_reason.items():
-            lines.append(f"- **{reason}:** {count}")
+        by_stage = _count_failure_stages(failed)
+        lines.append("**By error type:**")
+        for reason, count in sorted(by_reason.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- `{reason}`: {count}")
+        lines.append("")
+        lines.append("**By failure stage:**")
+        for stage, count in sorted(by_stage.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- `{stage}`: {count}")
         lines.append("")
         for r in failed:
-            lines.append(f"- {r['name']} ({r['url']}): {r.get('error_type', '?')} -- {r.get('error', '?')[:100]}")
+            stage = r.get("error_stage") or "unknown"
+            lines.append(f"- {r['name']} ({r['url']}) — stage=`{stage}`, type=`{r.get('error_type','?')}`: {r.get('error', '?')[:100]}")
 
     if skipped:
         lines.extend(["", "## Skipped Servers", ""])
@@ -391,6 +472,16 @@ def _count_failure_reasons(failed: list) -> dict:
         t = r.get("error_type", "unknown")
         reasons[t] = reasons.get(t, 0) + 1
     return reasons
+
+
+def _count_failure_stages(failed: list) -> dict:
+    """QO-049: per-stage failure tally so post-mortems can see where pipelines
+    die (connect vs manifest vs evaluate vs judge vs save)."""
+    stages: dict = {}
+    for r in failed:
+        s = r.get("error_stage") or "unknown"
+        stages[s] = stages.get(s, 0) + 1
+    return stages
 
 
 def _count_skip_reasons(skipped: list) -> dict:
@@ -457,26 +548,77 @@ def _get_judge():
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
+def _apply_filter(servers: list, filter_spec: Optional[str]) -> list:
+    """QO-049: filter servers by `key:value` pairs (e.g. `auth:none`, `category:web_search`)."""
+    if not filter_spec:
+        return servers
+
+    def matches(server: dict, key: str, value: str) -> bool:
+        if key == "auth":
+            # auth:none → requires_auth must be falsy
+            is_required = bool(server.get("requires_auth"))
+            return (value == "required") if is_required else (value == "none")
+        if key in ("category", "transport", "source", "name"):
+            return str(server.get(key, "")).lower() == value.lower()
+        # Fallback: unknown key → no match (caller typo)
+        return False
+
+    filters = [f.split(":", 1) for f in filter_spec.split(",") if ":" in f]
+    out = []
+    for s in servers:
+        if all(matches(s, k.strip(), v.strip()) for k, v in filters):
+            out.append(s)
+    return out
+
+
 async def main(
     registry_path: str,
     level: str = "verified",
     concurrency: int = 2,
     force: bool = False,
     limit: Optional[int] = None,
+    per_server_timeout: int = 180,
+    dry_run: bool = False,
+    filter_spec: Optional[str] = None,
 ):
     os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
     # Load registry
     registry = load_registry(registry_path)
     servers = registry["servers"]
+    original_count = len(servers)
+    servers = _apply_filter(servers, filter_spec)
     if limit:
         servers = servers[:limit]
 
     print(f"\n{'='*70}")
     print("  AgentTrust -- Batch Auto-Scoring Pipeline")
-    print(f"  Registry: {registry_path} ({len(servers)} servers)")
-    print(f"  Level: {level} | Concurrency: {concurrency} | Force: {force}")
+    print(f"  Registry: {registry_path} ({len(servers)}/{original_count} servers after filter)")
+    print(f"  Level: {level} | Concurrency: {concurrency} | Force: {force} | Timeout: {per_server_timeout}s")
+    if filter_spec:
+        print(f"  Filter: {filter_spec}")
+    if dry_run:
+        print("  MODE: DRY-RUN (no evaluations will run)")
     print(f"{'='*70}\n")
+
+    if dry_run:
+        # Summarize what would run, then exit
+        by_auth = {"none": 0, "required": 0}
+        by_category: dict = {}
+        for s in servers:
+            by_auth["required" if s.get("requires_auth") else "none"] += 1
+            cat = s.get("category", "uncategorized")
+            by_category[cat] = by_category.get(cat, 0) + 1
+        print(f"  Selected: {len(servers)} server(s)")
+        print(f"  By auth:  none={by_auth['none']}, required={by_auth['required']}")
+        print("  By category:")
+        for cat, count in sorted(by_category.items(), key=lambda kv: -kv[1]):
+            print(f"    - {cat}: {count}")
+        print("\n  First 10 selected:")
+        for s in servers[:10]:
+            print(f"    - {s['name']:<30s} {s['url']}")
+        print("\n  Registry validation OK. Exiting without evaluating.\n")
+        return
 
     # Connect to database
     print("  Connecting to database...")
@@ -504,6 +646,7 @@ async def main(
             idx=i,
             total=total,
             force=force,
+            per_server_timeout=per_server_timeout,
         )
         results.append(result)
 
@@ -541,6 +684,22 @@ if __name__ == "__main__":
         "--limit", type=int, default=None,
         help="Limit number of servers to evaluate",
     )
+    parser.add_argument(
+        "--timeout", type=int, default=180,
+        help="Per-server timeout in seconds (QO-050, default: 180)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="QO-049: validate registry and print what would run, without evaluating",
+    )
+    parser.add_argument(
+        "--filter", type=str, default=None,
+        help=(
+            "QO-049: comma-separated key:value pairs to filter the registry "
+            "(e.g. 'auth:none' or 'auth:none,category:developer_tools'). "
+            "Supported keys: auth, category, transport, source, name."
+        ),
+    )
     args = parser.parse_args()
 
     asyncio.run(main(
@@ -549,4 +708,7 @@ if __name__ == "__main__":
         concurrency=args.concurrency,
         force=args.force,
         limit=args.limit,
+        per_server_timeout=args.timeout,
+        dry_run=args.dry_run,
+        filter_spec=args.filter,
     ))

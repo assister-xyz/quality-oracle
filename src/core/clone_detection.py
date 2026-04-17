@@ -9,7 +9,7 @@ anti_gaming.py during evaluations.
 """
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 

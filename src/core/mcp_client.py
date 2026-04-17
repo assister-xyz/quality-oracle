@@ -69,7 +69,20 @@ async def _connect(url: str, transport: str = "auto") -> AsyncGenerator[Tuple[st
 
     last_error = None
     for t in transports_to_try:
-        yielded = False
+        # Three-state tracking (QO-049 fix):
+        #   Never yielded                 → connection itself failed; try fallback.
+        #   Yielded, caller raised        → async-CM contract forbids a
+        #                                   second yield after athrow, so
+        #                                   re-raise without touching the
+        #                                   fallback transport.
+        #   Yielded, caller completed     → any teardown error is safe to
+        #                                   suppress; the caller has already
+        #                                   consumed the session.
+        # A try/except wrapping the yield itself is the only reliable way to
+        # distinguish "caller raised" from "connection setup raised" because
+        # an assignment on the line after `yield` never runs when athrow fires.
+        caller_raised = False
+        caller_completed = False
         try:
             if t == "sse":
                 async with sse_client(
@@ -78,8 +91,12 @@ async def _connect(url: str, transport: str = "auto") -> AsyncGenerator[Tuple[st
                     sse_read_timeout=SSE_READ_TIMEOUT,
                 ) as (read, write):
                     async with ClientSession(read, write) as session:
-                        yielded = True
-                        yield t, session
+                        try:
+                            yield t, session
+                        except BaseException:
+                            caller_raised = True
+                            raise
+                        caller_completed = True
                         return
             else:
                 # Streamable HTTP (3-tuple: read, write, get_session_id)
@@ -90,15 +107,21 @@ async def _connect(url: str, transport: str = "auto") -> AsyncGenerator[Tuple[st
                     sse_read_timeout=SSE_READ_TIMEOUT,
                 ) as (read, write, _get_session_id):
                     async with ClientSession(read, write) as session:
-                        yielded = True
-                        yield t, session
+                        try:
+                            yield t, session
+                        except BaseException:
+                            caller_raised = True
+                            raise
+                        caller_completed = True
                         return
         except Exception as e:
-            if yielded:
-                # Caller already got its data — this is a cleanup error.
-                # Suppress it instead of falling through to a doomed fallback.
+            if caller_completed:
                 logger.debug(f"Transport {t} cleanup error for {url} (suppressed): {e}")
                 return
+            if caller_raised:
+                # Propagate the caller's own exception; a fallback retry here
+                # would violate the async-contextmanager athrow contract.
+                raise
             last_error = e
             if len(transports_to_try) > 1 and t == transports_to_try[0]:
                 logger.info(f"Transport {t} failed to connect to {url}, trying fallback: {e}")
@@ -268,6 +291,7 @@ async def get_server_manifest(server_url: str) -> dict:
     except Exception as e:
         logger.debug(f"Pre-flight check for {server_url} inconclusive: {e}")
 
+    manifest: Optional[dict] = None
     try:
         async with _connect(server_url) as (transport_used, session):
             init_result = await session.initialize()
@@ -294,7 +318,6 @@ async def get_server_manifest(server_url: str) -> dict:
                 f"Manifest: {manifest['name']} v{manifest['version']} "
                 f"with {len(tools)} tools via {transport_used}"
             )
-            return manifest
     except Exception as e:
         # Try to extract HTTP status from the exception chain
         error_str = str(e)
@@ -303,6 +326,15 @@ async def get_server_manifest(server_url: str) -> dict:
         full_error = f"{error_str} {cause_str}".strip()
         logger.error(f"Failed to connect to {server_url}: {full_error}")
         raise ConnectionError(f"Cannot connect to MCP server at {server_url}: {full_error}") from e
+
+    # Defense-in-depth: if _connect ever suppresses a runtime exception we
+    # didn't anticipate, fail loudly here instead of silently returning None.
+    if manifest is None:
+        logger.error(f"get_server_manifest: connect CM closed without yielding for {server_url}")
+        raise ConnectionError(
+            f"MCP session closed without producing a manifest: {server_url}"
+        )
+    return manifest
 
 
 async def check_response_consistency(
@@ -428,6 +460,143 @@ async def evaluate_server_streaming(
                 yield tool_name, case, response
 
 
+async def manifest_and_evaluate(
+    server_url: str,
+    test_types: Optional[set] = None,
+    max_tools: Optional[int] = None,
+) -> Tuple[dict, Dict[str, List[dict]]]:
+    """Fetch manifest + run functional eval over a SINGLE MCP session.
+
+    QO-049: some servers (e.g. Peek.com, Browserbase, CoinGecko) respond
+    fine on the first connection but their second `session.initialize()`
+    hangs or crashes when `get_server_manifest` → `evaluate_server` opens
+    back-to-back sessions. Combining both phases inside one `_connect`
+    avoids that reconnect class of failure and halves handshake cost.
+
+    Performs the same pre-flight check as `get_server_manifest` so DNS /
+    404 / 5xx errors surface consistently.
+
+    Returns (manifest, tool_responses).
+    """
+    from src.core.test_generator import generate_test_cases
+
+    logger.info(f"Fetching manifest + evaluating {server_url} (single session)")
+
+    # Pre-flight: catch DNS/auth/404/5xx before the MCP handshake
+    transport_hint = _detect_transport(server_url)
+    try:
+        async with httpx.AsyncClient(timeout=CONNECT_TIMEOUT) as http:
+            if transport_hint == "sse":
+                preflight = await http.head(server_url)
+            else:
+                preflight = await http.post(
+                    server_url,
+                    json={"jsonrpc": "2.0", "method": "initialize", "id": 0, "params": {}},
+                    headers={"Accept": "application/json, text/event-stream"},
+                )
+            if preflight.status_code in (401, 403):
+                raise ConnectionError(f"MCP server requires authentication ({preflight.status_code}): {server_url}")
+            if preflight.status_code == 404:
+                raise ConnectionError(f"MCP endpoint not found (404): {server_url}")
+            if preflight.status_code >= 500:
+                raise ConnectionError(f"MCP server error ({preflight.status_code}): {server_url}")
+    except ConnectionError:
+        raise
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+        raise ConnectionError(f"Cannot reach MCP server (DNS/network error): {server_url}") from e
+    except Exception as e:
+        logger.debug(f"Pre-flight check for {server_url} inconclusive: {e}")
+
+    manifest: Optional[dict] = None
+    tool_responses: Optional[Dict[str, List[dict]]] = None
+    try:
+        async with _connect(server_url) as (transport_used, session):
+            init_result = await session.initialize()
+            server_info = init_result.serverInfo
+            logger.info(f"Connected to {server_url} via {transport_used}")
+
+            tools_result = await session.list_tools()
+            tools = [
+                {
+                    "name": t.name,
+                    "description": t.description or "",
+                    "inputSchema": t.inputSchema if t.inputSchema else {},
+                }
+                for t in tools_result.tools
+            ]
+            manifest = {
+                "name": server_info.name if server_info else "unknown",
+                "version": server_info.version if server_info and server_info.version else "0.0.0",
+                "description": "",
+                "tools": tools,
+                "transport": transport_used,
+            }
+            logger.info(
+                f"Manifest: {manifest['name']} v{manifest['version']} "
+                f"with {len(tools)} tools via {transport_used}"
+            )
+
+            # Run functional eval on the SAME session — no reconnect.
+            # QO-049: commit progress per-case (not per-tool) so when a
+            # server cancels its stream mid-loop (CoinGecko, Peek, some
+            # TaskGroup-backed MCP servers), we still preserve every call
+            # that completed up to the failure point.
+            test_cases = generate_test_cases(tools, test_types=test_types, max_tools=max_tools)
+            tool_responses = {}
+            for tool_name, cases in test_cases.items():
+                tool_responses[tool_name] = []
+                for case in cases:
+                    start = time.time()
+                    response = await _call_tool_in_session(
+                        session, tool_name, case.get("input_data", {}), start
+                    )
+                    tool_responses[tool_name].append({
+                        "question": case["question"],
+                        "expected": case["expected"],
+                        "answer": response["content"],
+                        "latency_ms": response["latency_ms"],
+                        "is_error": response["is_error"],
+                        "test_type": case.get("test_type", "unknown"),
+                    })
+
+            total_cases = sum(len(v) for v in tool_responses.values())
+            logger.info(
+                f"Single-session eval complete: {len(tools)} tools, "
+                f"{total_cases} test cases via {transport_used}"
+            )
+    except Exception as e:
+        # QO-049: servers that cancel their SSE/HTTP stream on an errored
+        # tool call (CoinGecko, some MCP servers backed by FastAPI) bubble
+        # the cancel up as a TaskGroup exception at teardown — AFTER the
+        # body already finished collecting tool_responses. Return partial
+        # data rather than throwing away a full eval's worth of work.
+        error_str = str(e)
+        cause = e.__cause__ or e.__context__
+        cause_str = str(cause) if cause else ""
+        full_error = f"{error_str} {cause_str}".strip()
+        has_data = (
+            manifest is not None
+            and tool_responses is not None
+            and any(tool_responses.values())
+        )
+        if has_data:
+            logger.warning(
+                f"Teardown error after complete eval of {server_url} "
+                f"(returning partial data): {full_error}"
+            )
+            return manifest, tool_responses
+        logger.error(f"Failed single-session eval of {server_url}: {full_error}")
+        raise ConnectionError(
+            f"Cannot evaluate MCP server at {server_url}: {full_error}"
+        ) from e
+
+    if manifest is None or tool_responses is None:
+        raise ConnectionError(
+            f"MCP session closed without producing results: {server_url}"
+        )
+    return manifest, tool_responses
+
+
 async def evaluate_server(
     server_url: str,
     test_types: Optional[set] = None,
@@ -452,6 +621,7 @@ async def evaluate_server(
 
     logger.info(f"Starting full evaluation of {server_url}")
 
+    results: Optional[Dict[str, List[dict]]] = None
     async with _connect(server_url) as (transport_used, session):
         await session.initialize()
         logger.info(f"Connected to {server_url} via {transport_used}")
@@ -470,7 +640,7 @@ async def evaluate_server(
         test_cases = generate_test_cases(tools, test_types=test_types, max_tools=max_tools)
 
         # Execute each test case
-        results: Dict[str, List[dict]] = {}
+        results = {}
         for tool_name, cases in test_cases.items():
             tool_results = []
             for case in cases:
@@ -493,4 +663,12 @@ async def evaluate_server(
             f"Evaluation complete: {len(tools)} tools, "
             f"{total_cases} test cases executed via {transport_used}"
         )
-        return results
+
+    # Defense-in-depth: _connect suppressing a failure mode shouldn't silently
+    # yield None and crash the downstream judge with a NoneType error.
+    if results is None:
+        logger.error(f"evaluate_server: connect CM closed without yielding for {server_url}")
+        raise ConnectionError(
+            f"MCP session closed without executing any tool calls: {server_url}"
+        )
+    return results

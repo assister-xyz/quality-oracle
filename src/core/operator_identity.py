@@ -14,7 +14,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Optional
 
 from src.storage.cache import check_rate_limit
 from src.storage.models import (

@@ -10,7 +10,7 @@ import asyncio
 import logging
 import re
 import time
-from typing import Callable, Dict, List, Optional
+from typing import List, Optional
 
 from src.core.adversarial import ProbeResult
 
@@ -617,7 +617,7 @@ async def run_agent_trap_probes(
                 probe_type=probe_name,
                 passed=True,
                 score=50,
-                explanation=f"Probe timed out after 90s",
+                explanation="Probe timed out after 90s",
             ))
             logger.warning(f"[agent_trap] {probe_name}: timed out")
         except Exception as e:
