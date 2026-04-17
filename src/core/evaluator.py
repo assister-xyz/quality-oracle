@@ -82,6 +82,13 @@ class EvaluationResult:
         self.token_usage: Optional[Dict[str, Any]] = None
         self.cost_usd: Optional[float] = None
 
+        # QO-054: input quality — fraction of tool calls that did NOT error.
+        # A score from a run with low input_quality_rate is not a reliable
+        # signal about agent capability; it says more about our test inputs.
+        self.input_quality_rate: Optional[float] = None
+        self.total_tool_calls: int = 0
+        self.errored_tool_calls: int = 0
+
     def to_dict(self) -> dict:
         d = {
             "overall_score": self.overall_score,
@@ -95,6 +102,12 @@ class EvaluationResult:
             "duration_ms": self.duration_ms,
             "result_hash": self.result_hash,
         }
+        if self.input_quality_rate is not None:
+            d["input_quality"] = {
+                "rate": self.input_quality_rate,
+                "total_calls": self.total_tool_calls,
+                "errored_calls": self.errored_tool_calls,
+            }
         if self.dimensions:
             d["dimensions"] = self.dimensions
         if self.safety_report:
@@ -871,6 +884,25 @@ class Evaluator:
             logger.info(f"[evaluate_full] {target_id}: Process quality done, score={process_quality_score}")
         except Exception as e:
             logger.warning(f"Process quality analysis failed for {target_id}: {e}")
+
+        # QO-054: input_quality_rate — what fraction of our tool calls got a
+        # non-error response. If this is low, the score below is dominated by
+        # *our* bad inputs rather than the agent's capability, and consumers
+        # of the score should discount accordingly.
+        total_calls = sum(len(r) for r in tool_responses.values())
+        errored_calls = sum(
+            1 for responses in tool_responses.values()
+            for resp in responses
+            if resp.get("is_error")
+        )
+        result.total_tool_calls = total_calls
+        result.errored_tool_calls = errored_calls
+        if total_calls:
+            result.input_quality_rate = round(1.0 - (errored_calls / total_calls), 3)
+            logger.info(
+                f"[evaluate_full] {target_id}: input_quality_rate="
+                f"{result.input_quality_rate} ({total_calls - errored_calls}/{total_calls})"
+            )
 
         # Latency dimension — from tool response latencies
         all_latencies = []

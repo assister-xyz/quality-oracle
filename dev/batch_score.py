@@ -139,6 +139,14 @@ async def save_score(target_id: str, eval_result, manifest: dict, server_entry: 
         score_doc["safety_report"] = eval_result.safety_report
     if eval_result.latency_stats:
         score_doc["latency_stats"] = eval_result.latency_stats
+    # QO-054: persist input_quality_rate so we can chart drift / spot
+    # generator regressions over time.
+    if getattr(eval_result, "input_quality_rate", None) is not None:
+        score_doc["input_quality"] = {
+            "rate": eval_result.input_quality_rate,
+            "total_calls": eval_result.total_tool_calls,
+            "errored_calls": eval_result.errored_tool_calls,
+        }
 
     await scores_col().update_one(
         {"target_id": target_id},
@@ -298,6 +306,12 @@ async def evaluate_one(
         result["tool_scores"] = eval_result.tool_scores
         if eval_result.dimensions:
             result["dimensions"] = {k: v["score"] for k, v in eval_result.dimensions.items()}
+        # QO-054: surface input quality so the batch report can flag
+        # low-signal runs. A high score with 0.2 input-quality is suspect.
+        if getattr(eval_result, "input_quality_rate", None) is not None:
+            result["input_quality_rate"] = eval_result.input_quality_rate
+            result["total_tool_calls"] = eval_result.total_tool_calls
+            result["errored_tool_calls"] = eval_result.errored_tool_calls
 
     async with semaphore:
         await rate_limiter.wait()
@@ -387,6 +401,18 @@ def save_reports(results: list, reports_dir: Path) -> tuple[Path, Path]:
     failed = [r for r in results if r["status"] == "error"]
     skipped = [r for r in results if r["status"] == "skipped"]
 
+    # QO-054: batch-wide input-quality roll-up
+    iq_values = [
+        r["input_quality_rate"] for r in successful
+        if r.get("input_quality_rate") is not None
+    ]
+    batch_input_quality = round(sum(iq_values) / len(iq_values), 3) if iq_values else None
+    low_iq_servers = [
+        {"name": r["name"], "url": r["url"], "rate": r["input_quality_rate"]}
+        for r in successful
+        if r.get("input_quality_rate") is not None and r["input_quality_rate"] < 0.5
+    ]
+
     # JSON report
     json_path = reports_dir / f"batch-{date_str}.json"
     with open(json_path, "w") as f:
@@ -399,6 +425,8 @@ def save_reports(results: list, reports_dir: Path) -> tuple[Path, Path]:
             "avg_score": round(
                 sum(r["score"] for r in successful) / len(successful), 1
             ) if successful else 0,
+            "batch_input_quality_rate": batch_input_quality,
+            "low_input_quality_servers": low_iq_servers,
             "failure_reasons": _count_failure_reasons(failed),
             "failure_stages": _count_failure_stages(failed),
             "retried_count": sum(1 for r in results if r.get("retried")),
@@ -421,18 +449,30 @@ def save_reports(results: list, reports_dir: Path) -> tuple[Path, Path]:
 
     if successful:
         scores = [r["score"] for r in successful]
-        lines.append(f"**Avg Score:** {sum(scores)/len(scores):.0f}/100 | "
-                      f"**Highest:** {max(scores)}/100 | **Lowest:** {min(scores)}/100")
+        header = (f"**Avg Score:** {sum(scores)/len(scores):.0f}/100 | "
+                  f"**Highest:** {max(scores)}/100 | **Lowest:** {min(scores)}/100")
+        if batch_input_quality is not None:
+            header += f" | **Input Quality:** {batch_input_quality:.0%}"
+        lines.append(header)
         lines.append("")
         lines.append("## Scored Servers")
         lines.append("")
-        lines.append("| Rank | Server | Score | Tier | Tools | Category |")
-        lines.append("|------|--------|-------|------|-------|----------|")
+        lines.append("| Rank | Server | Score | Tier | Tools | Input Quality | Category |")
+        lines.append("|------|--------|-------|------|-------|---------------|----------|")
         for i, r in enumerate(successful, 1):
+            iq = r.get("input_quality_rate")
+            iq_str = f"{iq:.0%}" if iq is not None else "-"
             lines.append(
                 f"| {i} | {r['name']} | {r['score']}/100 | {r['tier']} | "
-                f"{r['tools_count']} | {r.get('category', '-')} |"
+                f"{r['tools_count']} | {iq_str} | {r.get('category', '-')} |"
             )
+
+        if low_iq_servers:
+            lines.append("")
+            lines.append("## ⚠️  Low Input Quality (score may not reflect agent capability)")
+            lines.append("")
+            for s in low_iq_servers:
+                lines.append(f"- {s['name']}: {s['rate']:.0%} ({s['url']})")
 
     if failed:
         lines.extend(["", "## Failed Servers", ""])

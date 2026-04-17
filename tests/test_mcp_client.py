@@ -282,6 +282,59 @@ async def test_manifest_and_evaluate_uses_single_session():
 
 
 @pytest.mark.asyncio
+async def test_per_tool_failure_does_not_cancel_evaluation():
+    """QO-054: a raising tool call must not kill the rest of the evaluation.
+
+    Previously, a `CancelledError` or TaskGroup exception from one tool
+    (e.g. server rejects a bad argument) propagated out of the session and
+    threw away every other tool's data. Now the bad tool is recorded as
+    is_error=True and the loop continues.
+    """
+    # Three tools. Only the second raises; tools #1 and #3 should still score.
+    t1 = _make_mock_tool(name="good_one")
+    t2 = _make_mock_tool(name="bad_one")
+    t3 = _make_mock_tool(name="third")
+
+    tools_result = MagicMock()
+    tools_result.tools = [t1, t2, t3]
+
+    mock_session = AsyncMock()
+    mock_session.initialize = AsyncMock(return_value=_make_mock_init_result())
+    mock_session.list_tools = AsyncMock(return_value=tools_result)
+
+    ok_result = _make_mock_result('{"result": "ok"}')
+
+    async def call_tool_side_effect(tool_name, arguments):
+        if tool_name == "bad_one":
+            raise asyncio.CancelledError("server cancelled stream")
+        return ok_result
+
+    mock_session.call_tool = AsyncMock(side_effect=call_tool_side_effect)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_http = AsyncMock()
+    mock_http.head = AsyncMock(return_value=mock_response)
+    mock_http.post = AsyncMock(return_value=mock_response)
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=None)
+
+    p1, p2, p3 = _patch_all_transports_with_session(mock_session)
+    with p1, p2, p3, patch("src.core.mcp_client.httpx.AsyncClient", return_value=mock_http):
+        manifest, tool_responses = await manifest_and_evaluate(
+            "http://localhost:8010/sse"
+        )
+
+    # All three tools should have recorded entries (even bad_one has an error entry)
+    assert set(tool_responses.keys()) == {"good_one", "bad_one", "third"}
+    # good_one / third completed without error
+    assert any(not r["is_error"] for r in tool_responses["good_one"])
+    assert any(not r["is_error"] for r in tool_responses["third"])
+    # bad_one has at least one is_error entry
+    assert any(r["is_error"] for r in tool_responses["bad_one"])
+
+
+@pytest.mark.asyncio
 async def test_manifest_and_evaluate_preflight_404_surfaces():
     """404 must be caught by the pre-flight HTTP check, before the
     MCP handshake wastes a connection."""

@@ -27,11 +27,40 @@ SEMANTIC_PARAM_MAP: Dict[str, List[str]] = {
     "prompt": ["Explain quantum computing in simple terms", "Write a haiku about coding"],
     "content": ["This is sample content for testing", "A short paragraph about technology"],
     "input": ["sample input data", "test input string", "example input"],
+    # QO-054: Crypto / Web3 — many MCP servers require real coin IDs or addresses.
+    # Generic "id=abc123" killed CoinGecko in the prod batch.
+    "coin": ["bitcoin", "ethereum", "solana"],
+    "coin_id": ["bitcoin", "ethereum", "solana"],
+    "token": ["USDC", "SOL", "ETH"],
+    "token_id": ["bitcoin", "ethereum", "usd-coin"],
+    "symbol": ["BTC", "ETH", "SOL"],
+    "ticker": ["BTC", "ETH", "SOL"],
+    "chain": ["ethereum", "solana", "base"],
+    "network": ["mainnet", "ethereum", "solana"],
+    "wallet": [
+        "0x742d35Cc6634C0532925a3b844Bc9e7595f0fAAa",  # random EVM
+        "So11111111111111111111111111111111111111112",  # wSOL mint
+        "0x0000000000000000000000000000000000000000",
+    ],
+    # "address" serves both crypto wallet and postal address contexts. Crypto
+    # first — most MCP servers asking for an "address" are blockchain-backed.
+    "address": [
+        "0x742d35Cc6634C0532925a3b844Bc9e7595f0fAAa",
+        "So11111111111111111111111111111111111111112",
+        "123 Main St, Springfield",
+    ],
+    # QO-054: Repos / code hosting — MCP servers backed by GitHub APIs need these.
+    "repo": ["anthropics/anthropic-cookbook", "solana-labs/solana", "microsoft/vscode"],
+    "repository": ["anthropics/anthropic-cookbook", "solana-labs/solana", "microsoft/vscode"],
+    "owner": ["anthropics", "solana-labs", "microsoft"],
+    "org": ["anthropics", "solana-labs", "microsoft"],
+    "branch": ["main", "develop", "master"],
+    "commit": ["abc1234", "def5678", "9abcdef"],
+    "sha": ["abc1234", "def5678", "9abcdef"],
     # Location / geo
     "city": ["London", "New York", "Tokyo"],
     "location": ["San Francisco, CA", "Berlin, Germany", "Sydney, Australia"],
     "country": ["United States", "Japan", "Germany"],
-    "address": ["123 Main St, Springfield", "1 Infinite Loop, Cupertino"],
     "zip": ["94105", "10001", "SW1A 1AA"],
     "zipcode": ["94105", "10001", "60601"],
     # Units / conversion
@@ -154,74 +183,236 @@ def _fuzzy_match_param_name(key: str, mapping: dict) -> Optional[str]:
     return None
 
 
-def _generate_sample_input(schema: dict, variation: int = 0) -> dict:
+# ---------------------------------------------------------------------------
+# QO-054: Format generators for JSON Schema `format` keyword
+# ---------------------------------------------------------------------------
+# Covers the common formats seen on real MCP servers. Pattern-based synthesis
+# (`pattern` keyword) is deliberately not implemented — most production
+# schemas use `format` instead, and `rstr`-style regex-to-string synthesis
+# can generate pathological values. Fall through to semantic map if `format`
+# is unrecognized.
+FORMAT_GENERATORS: Dict[str, List[str]] = {
+    "uuid": [
+        "00000000-0000-4000-8000-000000000001",
+        "11111111-1111-4111-8111-111111111111",
+        "deadbeef-dead-4dad-8bad-feedfacedead",
+    ],
+    "email": ["user@example.com", "test@mail.org", "jane@company.io"],
+    "date": ["2025-01-15", "2024-06-30", "2023-12-25"],
+    "date-time": [
+        "2025-01-15T14:30:00Z",
+        "2024-06-30T09:00:00Z",
+        "2023-12-25T23:59:59Z",
+    ],
+    "time": ["14:30:00", "09:00:00", "23:59:59"],
+    "uri": ["https://example.com", "https://api.github.com", "https://docs.python.org"],
+    "url": ["https://example.com", "https://api.github.com", "https://docs.python.org"],
+    "hostname": ["example.com", "api.github.com", "docs.python.org"],
+    "ipv4": ["192.168.1.1", "10.0.0.1", "172.16.0.1"],
+    "ipv6": ["::1", "2001:db8::1", "fe80::1"],
+    "duration": ["PT1H", "P1D", "PT30M"],
+    "byte": ["dGVzdA==", "aGVsbG8=", "d29ybGQ="],
+    "binary": ["dGVzdA==", "aGVsbG8=", "d29ybGQ="],
+}
+
+
+def _resolve_ref(prop: dict, root: dict, seen: Optional[set] = None, depth: int = 0) -> dict:
+    """Resolve a JSON-Pointer $ref against the root schema.
+
+    Depth-bounded (3 levels) with cycle detection via `seen`. Returns the
+    original prop if resolution fails — the caller is expected to fall
+    through to less-specific rules.
+    """
+    seen = seen if seen is not None else set()
+    if "$ref" not in prop or depth >= 3:
+        return prop
+    ref = prop["$ref"]
+    if ref in seen or not isinstance(ref, str) or not ref.startswith("#/"):
+        return prop
+    seen.add(ref)
+    target = root
+    for part in ref[2:].split("/"):
+        if isinstance(target, dict) and part in target:
+            target = target[part]
+        else:
+            return prop
+    if isinstance(target, dict) and "$ref" in target:
+        return _resolve_ref(target, root, seen, depth + 1)
+    return target if isinstance(target, dict) else prop
+
+
+def _clamp(value, prop: dict, prop_type: str):
+    """Apply JSON-Schema range / length constraints to a generated value.
+
+    Keeps inputs within declared bounds so servers with strict validation
+    (common with FastAPI/pydantic-backed MCPs) don't reject us.
+    """
+    if prop_type in ("integer", "number"):
+        try:
+            v = float(value) if prop_type == "number" else int(float(value))
+        except (ValueError, TypeError):
+            return value
+        if "minimum" in prop:
+            v = max(v, prop["minimum"])
+        if "maximum" in prop:
+            v = min(v, prop["maximum"])
+        if "exclusiveMinimum" in prop:
+            bump = 1 if prop_type == "integer" else 1e-6
+            v = max(v, prop["exclusiveMinimum"] + bump)
+        if "exclusiveMaximum" in prop:
+            bump = 1 if prop_type == "integer" else 1e-6
+            v = min(v, prop["exclusiveMaximum"] - bump)
+        return int(v) if prop_type == "integer" else v
+    if prop_type == "string" and isinstance(value, str):
+        min_len = prop.get("minLength")
+        max_len = prop.get("maxLength")
+        if min_len is not None and len(value) < min_len:
+            value = value.ljust(min_len, "x")
+        # Always cap at 256 to avoid pathological payloads
+        hard_cap = min(max_len, 256) if max_len is not None else 256
+        if len(value) > hard_cap:
+            value = value[:hard_cap]
+        return value
+    return value
+
+
+def _generate_sample_input(schema: dict, variation: int = 0, root_schema: Optional[dict] = None) -> dict:
     """
     Generate sample input data from a JSON schema.
 
-    Priority chain for each parameter:
-    1. Schema enum values (pick by variation index)
-    2. Schema default
-    3. Schema examples
-    4. Extracted from description via regex
-    5. Semantic map by exact param name
-    6. Fuzzy suffix match
-    7. Fallback: f"test_{key}"
+    QO-054 priority chain per parameter (first match wins):
+      0. $ref         — resolve against root_schema (up to 3 levels deep)
+      1. const        — use verbatim
+      2. enum         — enum[variation % len]
+      3. default
+      4. examples     — also accepts singular "example"
+      5. format       — FORMAT_GENERATORS lookup (uuid/email/date-time/…)
+      6. description  — regex-extracted phrase
+      7. oneOf/anyOf  — recurse into the first typed branch
+      8. semantic map — exact → fuzzy suffix match
+      9. type fallback with min/max/length clamping
+      10. f"test_{key}" last resort
+
+    All numeric and string values are passed through `_clamp` to respect
+    minimum/maximum/minLength/maxLength constraints.
     """
+    # The first call establishes the root for $ref resolution; recursion
+    # (e.g. for object-typed properties) inherits it.
+    if root_schema is None:
+        root_schema = schema
+
     properties = schema.get("properties", {})
     required = schema.get("required", [])
     sample = {}
 
     for key, prop in properties.items():
+        # Resolve $ref at the property level before any other rule runs.
+        if isinstance(prop, dict) and "$ref" in prop:
+            prop = _resolve_ref(prop, root_schema)
+
         if key not in required and len(sample) >= 3:
             continue  # Only fill required + a few optional
 
-        prop_type = prop.get("type", "string")
-        value = _resolve_param_value(key, prop, prop_type, variation)
+        prop_type = prop.get("type", "string") if isinstance(prop, dict) else "string"
+        value = _resolve_param_value(key, prop, prop_type, variation, root_schema)
         sample[key] = value
 
     return sample
 
 
-def _resolve_param_value(key: str, prop: dict, prop_type: str, variation: int):
-    """Resolve a single parameter value using the priority chain."""
-    # 1. Enum values
+def _resolve_param_value(
+    key: str,
+    prop: dict,
+    prop_type: str,
+    variation: int,
+    root_schema: Optional[dict] = None,
+):
+    """Resolve a single parameter value using the QO-054 priority chain."""
+    if not isinstance(prop, dict):
+        return f"test_{key}"
+
+    # 1. const — always exact
+    if "const" in prop:
+        return prop["const"]
+
+    # 2. enum
     enum_values = prop.get("enum")
     if enum_values:
-        return enum_values[variation % len(enum_values)]
+        return _clamp(enum_values[variation % len(enum_values)], prop, prop_type)
 
-    # 2. Schema default
+    # 3. Schema default
     if "default" in prop:
-        return prop["default"]
+        return _clamp(prop["default"], prop, prop_type)
 
-    # 3. Schema examples
+    # 4. Schema examples (plural or singular)
     examples = prop.get("examples")
+    if not examples and "example" in prop:
+        examples = [prop["example"]]
     if examples:
-        return examples[variation % len(examples)]
+        return _clamp(examples[variation % len(examples)], prop, prop_type)
 
-    # 4. Extract from description (only for variation=0; others fall through to
+    # 5. format — generate a schema-valid value for well-known formats
+    fmt = prop.get("format")
+    if fmt and prop_type in ("string", None, "any") and fmt in FORMAT_GENERATORS:
+        candidates = FORMAT_GENERATORS[fmt]
+        return _clamp(candidates[variation % len(candidates)], prop, "string")
+
+    # 6. Extract from description (only for variation=0; others fall through to
     #    semantic maps which have multiple values for variation diversity)
     if variation == 0:
         desc_example = _extract_example_from_description(prop.get("description"))
         if desc_example:
-            # Try to coerce to the right type
             if prop_type in ("integer", "number"):
                 try:
-                    return float(desc_example) if prop_type == "number" else int(desc_example)
+                    coerced = float(desc_example) if prop_type == "number" else int(desc_example)
+                    return _clamp(coerced, prop, prop_type)
                 except (ValueError, TypeError):
                     pass
             else:
-                return desc_example
+                return _clamp(desc_example, prop, prop_type)
 
-    # 5 & 6. Semantic map (exact then fuzzy)
+    # 7. oneOf / anyOf — pick the first branch whose type we can handle
+    for kw in ("oneOf", "anyOf"):
+        branches = prop.get(kw)
+        if not branches:
+            continue
+        for branch in branches:
+            if not isinstance(branch, dict):
+                continue
+            resolved = _resolve_ref(branch, root_schema or {}) if "$ref" in branch else branch
+            branch_type = resolved.get("type")
+            if branch_type in ("string", "integer", "number", "boolean", "array", "object"):
+                return _resolve_param_value(key, resolved, branch_type, variation, root_schema)
+
+    # 8 & 9. Semantic map / type fallback
     if prop_type == "string":
-        return _resolve_string_param(key, variation)
-    elif prop_type in ("integer", "number"):
-        return _resolve_number_param(key, prop_type, variation)
-    elif prop_type == "boolean":
+        return _clamp(_resolve_string_param(key, variation), prop, "string")
+    if prop_type in ("integer", "number"):
+        return _clamp(_resolve_number_param(key, prop_type, variation), prop, prop_type)
+    if prop_type == "boolean":
         return True
-    elif prop_type == "array":
+    if prop_type == "array":
+        items = prop.get("items")
+        if isinstance(items, dict):
+            if "$ref" in items:
+                items = _resolve_ref(items, root_schema or {})
+            item_type = items.get("type")
+            if item_type in ("string", "integer", "number", "boolean", "array", "object"):
+                item = _resolve_param_value(
+                    f"{key}_item", items, item_type, variation, root_schema
+                )
+                min_items = max(1, prop.get("minItems", 1))
+                max_items = prop.get("maxItems", min_items)
+                return [item] * min(min_items, max_items)
         return []
-    elif prop_type == "object":
+    if prop_type == "object":
+        # Recurse using the same priority chain — preserves root_schema for $refs
+        if "properties" in prop:
+            return _generate_sample_input(
+                {"properties": prop["properties"], "required": prop.get("required", [])},
+                variation,
+                root_schema,
+            )
         return {}
 
     return f"test_{key}"

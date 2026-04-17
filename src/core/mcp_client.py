@@ -541,15 +541,42 @@ async def manifest_and_evaluate(
             # server cancels its stream mid-loop (CoinGecko, Peek, some
             # TaskGroup-backed MCP servers), we still preserve every call
             # that completed up to the failure point.
+            # QO-054: a failing tool call must not cancel the rest of the
+            # evaluation. Catch BaseException (not Exception) because some
+            # transports surface the server's mid-stream cancel as a
+            # CancelledError rather than a plain Exception. Always
+            # re-raise KeyboardInterrupt / SystemExit / true TimeoutError
+            # so legitimate cancellation semantics still propagate.
             test_cases = generate_test_cases(tools, test_types=test_types, max_tools=max_tools)
             tool_responses = {}
             for tool_name, cases in test_cases.items():
                 tool_responses[tool_name] = []
+                abort_tool = False
                 for case in cases:
+                    if abort_tool:
+                        break
                     start = time.time()
-                    response = await _call_tool_in_session(
-                        session, tool_name, case.get("input_data", {}), start
-                    )
+                    try:
+                        response = await _call_tool_in_session(
+                            session, tool_name, case.get("input_data", {}), start
+                        )
+                    except (KeyboardInterrupt, SystemExit):
+                        raise
+                    except BaseException as call_exc:  # noqa: BLE001 — includes CancelledError
+                        latency_ms = int((time.time() - start) * 1000)
+                        logger.warning(
+                            f"[manifest_and_evaluate] tool {tool_name} aborted "
+                            f"by {type(call_exc).__name__}: {str(call_exc)[:120]}"
+                        )
+                        response = {
+                            "content": f"Tool call aborted: {type(call_exc).__name__}: {str(call_exc)[:200]}",
+                            "is_error": True,
+                            "latency_ms": latency_ms,
+                        }
+                        # Skip remaining cases for *this* tool only; the
+                        # next tool may work (especially for servers that
+                        # only fail specific tools, not the whole session).
+                        abort_tool = True
                     tool_responses[tool_name].append({
                         "question": case["question"],
                         "expected": case["expected"],
