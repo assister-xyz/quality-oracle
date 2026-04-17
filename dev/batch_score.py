@@ -201,7 +201,7 @@ async def evaluate_one(
     aggregated by error_stage for post-mortems.
     """
     import traceback as _tb
-    from src.core.mcp_client import get_server_manifest, evaluate_server
+    from src.core.mcp_client import manifest_and_evaluate
     from src.core.evaluator import Evaluator
     from src.core.quick_scan import quick_scan
 
@@ -248,24 +248,23 @@ async def evaluate_one(
         """One attempt at the full L2 pipeline. Stage failures set result
         fields and re-raise so the outer retry loop can decide what to do.
         """
-        stage = "manifest"
+        # QO-049: single MCP session for manifest + functional eval. Prior
+        # two-session flow failed on servers that can't handshake twice
+        # back-to-back (Peek.com, Browserbase, CoinGecko); those now recover.
+        stage = "manifest_and_evaluate"
         result["error_stage"] = stage
         s = time.time()
-        manifest = await asyncio.wait_for(get_server_manifest(url), timeout=30)
-        result["stages"]["manifest_ms"] = int((time.time() - s) * 1000)
-        result["tools_count"] = len(manifest.get("tools", []))
-        print(f"  [{idx}/{total}] {name}: {result['tools_count']} tools via {manifest.get('transport', '?')}")
-
-        stage = "evaluate"
-        result["error_stage"] = stage
-        s = time.time()
-        tool_responses = await asyncio.wait_for(
-            evaluate_server(url), timeout=per_server_timeout
+        manifest, tool_responses = await asyncio.wait_for(
+            manifest_and_evaluate(url), timeout=per_server_timeout
         )
-        result["stages"]["evaluate_ms"] = int((time.time() - s) * 1000)
+        result["stages"]["manifest_and_evaluate_ms"] = int((time.time() - s) * 1000)
+        result["tools_count"] = len(manifest.get("tools", []))
         total_cases = sum(len(v) for v in tool_responses.values())
         result["stages"]["test_cases"] = total_cases
-        print(f"  [{idx}/{total}] {name}: {total_cases} test cases executed")
+        print(
+            f"  [{idx}/{total}] {name}: {result['tools_count']} tools, "
+            f"{total_cases} test cases via {manifest.get('transport', '?')}"
+        )
 
         stage = "judge"
         result["error_stage"] = stage

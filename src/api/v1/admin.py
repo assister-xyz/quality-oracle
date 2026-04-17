@@ -212,7 +212,7 @@ async def _run_batch_evaluation(
     """
     from uuid import uuid4
     from src.core.mcp_client import (
-        get_server_manifest, evaluate_server,
+        manifest_and_evaluate,
         current_evaluation_id, current_target_id, _call_index_counter,
     )
     from src.core.evaluator import Evaluator
@@ -289,12 +289,11 @@ async def _run_batch_evaluation(
                 current_target_id.set(url)
                 _call_index_counter.set(0)
 
-                # QO-050: Wrap entire eval in per-server timeout to prevent hangs
-                manifest = await asyncio.wait_for(
-                    get_server_manifest(url), timeout=30
-                )
-                tool_responses = await asyncio.wait_for(
-                    evaluate_server(url), timeout=per_server_timeout
+                # QO-050 timeout wraps manifest + eval together. QO-049
+                # single-session flow avoids back-to-back handshakes that
+                # some servers (Peek/Browserbase/CoinGecko) can't handle.
+                manifest, tool_responses = await asyncio.wait_for(
+                    manifest_and_evaluate(url), timeout=per_server_timeout
                 )
 
                 evaluator = Evaluator(llm_judge=judge)

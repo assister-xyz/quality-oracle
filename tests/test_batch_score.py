@@ -350,9 +350,6 @@ class TestBatchTimeout:
         async def _hang(*_a, **_kw):
             await _asyncio.sleep(10)
 
-        async def _fast_manifest(_url):
-            return {"tools": []}
-
         evals_update = AsyncMock()
 
         scores_col_mock = MagicMock()
@@ -363,12 +360,13 @@ class TestBatchTimeout:
         evals_col_mock.insert_one = AsyncMock()
         evals_col_mock.update_one = evals_update
 
+        # QO-049: admin path now uses single-session manifest_and_evaluate;
+        # hanging it is enough to exercise the per-server timeout guard.
         with patch("src.storage.mongodb.scores_col", return_value=scores_col_mock), \
              patch("src.storage.mongodb.evaluations_col", return_value=evals_col_mock), \
              patch("src.api.v1.admin.scores_col", return_value=scores_col_mock), \
              patch("src.api.v1.admin.evaluations_col", return_value=evals_col_mock), \
-             patch("src.core.mcp_client.get_server_manifest", side_effect=_fast_manifest), \
-             patch("src.core.mcp_client.evaluate_server", side_effect=_hang):
+             patch("src.core.mcp_client.manifest_and_evaluate", side_effect=_hang):
 
             # per_server_timeout=1 so the test finishes in ~2s, not 20s
             await admin_mod._run_batch_evaluation(

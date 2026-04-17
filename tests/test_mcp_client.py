@@ -9,6 +9,7 @@ from src.core.mcp_client import (
     call_tool,
     get_server_manifest,
     evaluate_server,
+    manifest_and_evaluate,
     _call_tool_in_session,
 )
 
@@ -228,3 +229,70 @@ async def test_evaluate_server_list_tools_error_surfaces():
     with p1, p2, p3:
         with pytest.raises(RuntimeError, match="tools listing failed"):
             await evaluate_server("http://localhost:8010/sse")
+
+
+@pytest.mark.asyncio
+async def test_manifest_and_evaluate_uses_single_session():
+    """QO-049: combined manifest + eval path must open exactly one MCP
+    session. Opening a second one breaks servers that can't re-handshake
+    rapidly (Peek.com, Browserbase, CoinGecko)."""
+    mock_session = AsyncMock()
+    mock_session.initialize = AsyncMock(return_value=_make_mock_init_result())
+    tools_result = MagicMock()
+    tools_result.tools = [_make_mock_tool()]
+    mock_session.list_tools = AsyncMock(return_value=tools_result)
+    mock_session.call_tool = AsyncMock(return_value=_make_mock_result('{"result": 42}'))
+
+    # Pre-flight HTTP mock (manifest_and_evaluate does DNS/404/5xx check first)
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_http = AsyncMock()
+    mock_http.head = AsyncMock(return_value=mock_response)
+    mock_http.post = AsyncMock(return_value=mock_response)
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=None)
+
+    # Count ClientSession instantiations
+    mock_client_cm = MagicMock()
+    mock_client_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+    client_session_factory = MagicMock(return_value=mock_client_cm)
+
+    mock_sse_cm = MagicMock()
+    mock_sse_cm.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
+    mock_sse_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.core.mcp_client.sse_client", return_value=mock_sse_cm), \
+         patch("src.core.mcp_client.ClientSession", client_session_factory), \
+         patch("src.core.mcp_client.httpx.AsyncClient", return_value=mock_http):
+        manifest, tool_responses = await manifest_and_evaluate("http://localhost:8010/sse")
+
+    # The whole point of the refactor: exactly one ClientSession instance.
+    assert client_session_factory.call_count == 1, (
+        f"Expected 1 ClientSession, got {client_session_factory.call_count}. "
+        "Two sessions break servers that can't handshake twice."
+    )
+    assert mock_session.initialize.await_count == 1
+    assert manifest["name"] == "TestServer"
+    assert len(manifest["tools"]) == 1
+    assert "calculate" in tool_responses
+    assert len(tool_responses["calculate"]) > 0
+    first = tool_responses["calculate"][0]
+    assert first["answer"] == '{"result": 42}'
+
+
+@pytest.mark.asyncio
+async def test_manifest_and_evaluate_preflight_404_surfaces():
+    """404 must be caught by the pre-flight HTTP check, before the
+    MCP handshake wastes a connection."""
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    mock_http = AsyncMock()
+    mock_http.head = AsyncMock(return_value=mock_response)
+    mock_http.post = AsyncMock(return_value=mock_response)
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("src.core.mcp_client.httpx.AsyncClient", return_value=mock_http):
+        with pytest.raises(ConnectionError, match="404"):
+            await manifest_and_evaluate("https://moved.example/mcp")
