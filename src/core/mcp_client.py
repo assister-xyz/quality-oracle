@@ -69,7 +69,20 @@ async def _connect(url: str, transport: str = "auto") -> AsyncGenerator[Tuple[st
 
     last_error = None
     for t in transports_to_try:
-        yielded = False
+        # Three-state tracking (QO-049 fix):
+        #   Never yielded                 → connection itself failed; try fallback.
+        #   Yielded, caller raised        → async-CM contract forbids a
+        #                                   second yield after athrow, so
+        #                                   re-raise without touching the
+        #                                   fallback transport.
+        #   Yielded, caller completed     → any teardown error is safe to
+        #                                   suppress; the caller has already
+        #                                   consumed the session.
+        # A try/except wrapping the yield itself is the only reliable way to
+        # distinguish "caller raised" from "connection setup raised" because
+        # an assignment on the line after `yield` never runs when athrow fires.
+        caller_raised = False
+        caller_completed = False
         try:
             if t == "sse":
                 async with sse_client(
@@ -78,8 +91,12 @@ async def _connect(url: str, transport: str = "auto") -> AsyncGenerator[Tuple[st
                     sse_read_timeout=SSE_READ_TIMEOUT,
                 ) as (read, write):
                     async with ClientSession(read, write) as session:
-                        yielded = True
-                        yield t, session
+                        try:
+                            yield t, session
+                        except BaseException:
+                            caller_raised = True
+                            raise
+                        caller_completed = True
                         return
             else:
                 # Streamable HTTP (3-tuple: read, write, get_session_id)
@@ -90,15 +107,21 @@ async def _connect(url: str, transport: str = "auto") -> AsyncGenerator[Tuple[st
                     sse_read_timeout=SSE_READ_TIMEOUT,
                 ) as (read, write, _get_session_id):
                     async with ClientSession(read, write) as session:
-                        yielded = True
-                        yield t, session
+                        try:
+                            yield t, session
+                        except BaseException:
+                            caller_raised = True
+                            raise
+                        caller_completed = True
                         return
         except Exception as e:
-            if yielded:
-                # Caller already got its data — this is a cleanup error.
-                # Suppress it instead of falling through to a doomed fallback.
+            if caller_completed:
                 logger.debug(f"Transport {t} cleanup error for {url} (suppressed): {e}")
                 return
+            if caller_raised:
+                # Propagate the caller's own exception; a fallback retry here
+                # would violate the async-contextmanager athrow contract.
+                raise
             last_error = e
             if len(transports_to_try) > 1 and t == transports_to_try[0]:
                 logger.info(f"Transport {t} failed to connect to {url}, trying fallback: {e}")
@@ -268,6 +291,7 @@ async def get_server_manifest(server_url: str) -> dict:
     except Exception as e:
         logger.debug(f"Pre-flight check for {server_url} inconclusive: {e}")
 
+    manifest: Optional[dict] = None
     try:
         async with _connect(server_url) as (transport_used, session):
             init_result = await session.initialize()
@@ -294,7 +318,6 @@ async def get_server_manifest(server_url: str) -> dict:
                 f"Manifest: {manifest['name']} v{manifest['version']} "
                 f"with {len(tools)} tools via {transport_used}"
             )
-            return manifest
     except Exception as e:
         # Try to extract HTTP status from the exception chain
         error_str = str(e)
@@ -303,6 +326,15 @@ async def get_server_manifest(server_url: str) -> dict:
         full_error = f"{error_str} {cause_str}".strip()
         logger.error(f"Failed to connect to {server_url}: {full_error}")
         raise ConnectionError(f"Cannot connect to MCP server at {server_url}: {full_error}") from e
+
+    # Defense-in-depth: if _connect ever suppresses a runtime exception we
+    # didn't anticipate, fail loudly here instead of silently returning None.
+    if manifest is None:
+        logger.error(f"get_server_manifest: connect CM closed without yielding for {server_url}")
+        raise ConnectionError(
+            f"MCP session closed without producing a manifest: {server_url}"
+        )
+    return manifest
 
 
 async def check_response_consistency(
@@ -452,6 +484,7 @@ async def evaluate_server(
 
     logger.info(f"Starting full evaluation of {server_url}")
 
+    results: Optional[Dict[str, List[dict]]] = None
     async with _connect(server_url) as (transport_used, session):
         await session.initialize()
         logger.info(f"Connected to {server_url} via {transport_used}")
@@ -470,7 +503,7 @@ async def evaluate_server(
         test_cases = generate_test_cases(tools, test_types=test_types, max_tools=max_tools)
 
         # Execute each test case
-        results: Dict[str, List[dict]] = {}
+        results = {}
         for tool_name, cases in test_cases.items():
             tool_results = []
             for case in cases:
@@ -493,4 +526,12 @@ async def evaluate_server(
             f"Evaluation complete: {len(tools)} tools, "
             f"{total_cases} test cases executed via {transport_used}"
         )
-        return results
+
+    # Defense-in-depth: _connect suppressing a failure mode shouldn't silently
+    # yield None and crash the downstream judge with a NoneType error.
+    if results is None:
+        logger.error(f"evaluate_server: connect CM closed without yielding for {server_url}")
+        raise ConnectionError(
+            f"MCP session closed without executing any tool calls: {server_url}"
+        )
+    return results
