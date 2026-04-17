@@ -1,9 +1,32 @@
 """Tests for battle API endpoints."""
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 from tests.conftest import _make_mock_col
+
+
+def _mock_verified_operator():
+    """Build a mock verified operator for require_verified_operator override."""
+    from src.storage.models import Operator, OperatorStatus
+    return Operator(
+        operator_id="op_test_verified",
+        display_name="Test Operator",
+        email="test@example.com",
+        auth_provider="github",
+        github_user_id=99999,
+        github_username="testbot",
+        github_avatar_url="https://example.com/avatar.png",
+        github_account_age_days=365,
+        github_public_repos=10,
+        github_followers=20,
+        verified=True,
+        agent_target_ids=[],
+        max_agents=5,
+        max_battles_per_day=15,
+        status=OperatorStatus.ACTIVE,
+        created_at=datetime.now(timezone.utc),
+    )
 
 
 @pytest.fixture()
@@ -48,6 +71,8 @@ def battle_api_client(mock_api_key_doc, mock_battles_col):
         patch("src.api.v1.attestations.cache_attestation_verify", new_callable=AsyncMock),
         # Rate limiting
         patch("src.auth.rate_limiter.check_rate_limit", new_callable=AsyncMock, return_value=(True, 99, 100)),
+        # QO-046: patch add_agent_to_operator (battle.py calls it to auto-claim agents)
+        patch("src.api.v1.battles.add_agent_to_operator", new_callable=AsyncMock),
         # Lifecycle
         patch("src.storage.mongodb.connect_db", new_callable=AsyncMock),
         patch("src.storage.mongodb.close_db", new_callable=AsyncMock),
@@ -62,8 +87,16 @@ def battle_api_client(mock_api_key_doc, mock_battles_col):
 
     from fastapi.testclient import TestClient
     from src.main import app
+    from src.auth.dependencies import require_verified_operator
+
+    # QO-046: Override require_verified_operator to return a mock verified operator
+    # so existing battle tests don't need to set up full OAuth session
+    app.dependency_overrides[require_verified_operator] = lambda: _mock_verified_operator()
+
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
+
+    app.dependency_overrides.clear()
 
     for p in reversed(patches):
         p.stop()
