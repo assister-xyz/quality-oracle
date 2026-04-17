@@ -18,6 +18,7 @@ from src.storage.mongodb import (
     probe_executions_col,
 )
 from src.auth.dependencies import get_api_key
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -108,8 +109,9 @@ class BatchEvaluateRequest(BaseModel):
     timeout_seconds: Optional[int] = None  # QO-050: per-server cap (default 180)
 
 
-# QO-050: Hard cap per server in batch eval (prevents 1 slow URL hanging entire batch)
-BATCH_PER_SERVER_TIMEOUT_DEFAULT = 180
+# QO-050: Hard cap per server in batch eval (prevents 1 slow URL hanging entire batch).
+# Sourced from settings so it's overridable via env without a code change.
+BATCH_PER_SERVER_TIMEOUT_DEFAULT = settings.batch_per_server_timeout_seconds
 
 
 class BatchJobStatus(BaseModel):

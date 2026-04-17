@@ -173,6 +173,7 @@ async def evaluate_one(
     idx: int,
     total: int,
     force: bool = False,
+    per_server_timeout: int = 180,
 ) -> dict:
     """Evaluate a single server from the registry."""
     from src.core.mcp_client import get_server_manifest, evaluate_server
@@ -237,23 +238,28 @@ async def evaluate_one(
             # L2 verified evaluation
             print(f"  [{idx}/{total}] Evaluating {name}...")
 
-            # Get manifest
-            manifest = await get_server_manifest(url)
+            # QO-050: per-server timeout wraps the manifest + functional eval
+            # + LLM judge pipeline so one hung server can't stall the batch.
+            manifest = await asyncio.wait_for(get_server_manifest(url), timeout=30)
             result["tools_count"] = len(manifest.get("tools", []))
             print(f"  [{idx}/{total}] {name}: {result['tools_count']} tools via {manifest.get('transport', '?')}")
 
-            # Run functional eval
-            tool_responses = await evaluate_server(url)
+            tool_responses = await asyncio.wait_for(
+                evaluate_server(url), timeout=per_server_timeout
+            )
             total_cases = sum(len(v) for v in tool_responses.values())
             print(f"  [{idx}/{total}] {name}: {total_cases} test cases executed")
 
             evaluator = Evaluator(llm_judge=judge)
-            eval_result = await evaluator.evaluate_full(
-                target_id=url,
-                server_url=url,
-                tool_responses=tool_responses,
-                manifest=manifest,
-                run_safety=True,
+            eval_result = await asyncio.wait_for(
+                evaluator.evaluate_full(
+                    target_id=url,
+                    server_url=url,
+                    tool_responses=tool_responses,
+                    manifest=manifest,
+                    run_safety=True,
+                ),
+                timeout=per_server_timeout,
             )
 
             result["status"] = "success"
@@ -284,10 +290,10 @@ async def evaluate_one(
 
         except asyncio.TimeoutError:
             result["status"] = "error"
-            result["error"] = "Evaluation timed out"
+            result["error"] = f"timeout after {per_server_timeout}s"
             result["error_type"] = "timeout"
             result["duration_ms"] = int((time.time() - start) * 1000)
-            print(f"  [{idx}/{total}] FAIL {name}: timeout")
+            print(f"  [{idx}/{total}] FAIL {name}: timeout after {per_server_timeout}s")
 
         except Exception as e:
             result["status"] = "error"
@@ -463,6 +469,7 @@ async def main(
     concurrency: int = 2,
     force: bool = False,
     limit: Optional[int] = None,
+    per_server_timeout: int = 180,
 ):
     os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
@@ -475,7 +482,7 @@ async def main(
     print(f"\n{'='*70}")
     print("  AgentTrust -- Batch Auto-Scoring Pipeline")
     print(f"  Registry: {registry_path} ({len(servers)} servers)")
-    print(f"  Level: {level} | Concurrency: {concurrency} | Force: {force}")
+    print(f"  Level: {level} | Concurrency: {concurrency} | Force: {force} | Timeout: {per_server_timeout}s")
     print(f"{'='*70}\n")
 
     # Connect to database
@@ -504,6 +511,7 @@ async def main(
             idx=i,
             total=total,
             force=force,
+            per_server_timeout=per_server_timeout,
         )
         results.append(result)
 
@@ -541,6 +549,10 @@ if __name__ == "__main__":
         "--limit", type=int, default=None,
         help="Limit number of servers to evaluate",
     )
+    parser.add_argument(
+        "--timeout", type=int, default=180,
+        help="Per-server timeout in seconds (QO-050, default: 180)",
+    )
     args = parser.parse_args()
 
     asyncio.run(main(
@@ -549,4 +561,5 @@ if __name__ == "__main__":
         concurrency=args.concurrency,
         force=args.force,
         limit=args.limit,
+        per_server_timeout=args.timeout,
     ))

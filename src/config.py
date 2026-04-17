@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     eval_timeout_seconds: int = 120
     evaluation_version: str = "v1.0"
 
+    # QO-050: per-server cap for batch evaluation — prevents one slow MCP
+    # server from hanging the whole batch job.
+    batch_per_server_timeout_seconds: int = 180
+
     # Rate limiting (evaluations per month)
     rate_limit_free: int = 10
     rate_limit_developer: int = 100

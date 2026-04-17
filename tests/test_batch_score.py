@@ -283,3 +283,115 @@ class TestAdminBatchEndpoint:
             )
 
         assert resp.status_code == 400
+
+    def test_batch_accepts_timeout_seconds(self, test_client):
+        """QO-050: BatchEvaluateRequest accepts optional timeout_seconds."""
+        with patch("src.auth.dependencies.validate_api_key", new_callable=AsyncMock) as mock_auth:
+            mock_auth.return_value = {
+                "_id": "hashed_key",
+                "tier": "marketplace",
+                "active": True,
+            }
+
+            resp = test_client.post(
+                "/v1/admin/batch-evaluate",
+                json={
+                    "urls": ["https://example.com/mcp"],
+                    "level": 2,
+                    "timeout_seconds": 60,
+                },
+                headers={"X-API-Key": "qo_test-marketplace-key"},
+            )
+
+        assert resp.status_code == 200
+        assert "job_id" in resp.json()
+
+
+class TestBatchTimeout:
+    """QO-050: per-server timeout in batch evaluation."""
+
+    def test_config_exposes_default(self):
+        """Default is sourced from settings, not hardcoded."""
+        from src.config import settings
+        from src.api.v1.admin import BATCH_PER_SERVER_TIMEOUT_DEFAULT
+        assert settings.batch_per_server_timeout_seconds == 180
+        assert BATCH_PER_SERVER_TIMEOUT_DEFAULT == settings.batch_per_server_timeout_seconds
+
+    def test_request_model_accepts_none(self):
+        """timeout_seconds is optional and defaults to None (→ use default)."""
+        from src.api.v1.admin import BatchEvaluateRequest
+        req = BatchEvaluateRequest(urls=["https://x"], level=2)
+        assert req.timeout_seconds is None
+
+    def test_request_model_accepts_override(self):
+        from src.api.v1.admin import BatchEvaluateRequest
+        req = BatchEvaluateRequest(urls=["https://x"], timeout_seconds=45)
+        assert req.timeout_seconds == 45
+
+    @pytest.mark.asyncio
+    async def test_timeout_marks_eval_failed_and_continues(self):
+        """When evaluate_full hangs, the eval is marked failed and the loop continues."""
+        import asyncio as _asyncio
+        from src.api.v1 import admin as admin_mod
+
+        # Seed job tracker
+        job_id = "test-qo-050"
+        admin_mod._batch_jobs[job_id] = {
+            "status": "running",
+            "total": 2,
+            "completed": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "skipped": 0,
+            "results": [],
+            "created_at": "2026-04-17T00:00:00Z",
+        }
+
+        async def _hang(*_a, **_kw):
+            await _asyncio.sleep(10)
+
+        async def _fast_manifest(_url):
+            return {"tools": []}
+
+        evals_update = AsyncMock()
+
+        scores_col_mock = MagicMock()
+        scores_col_mock.find_one = AsyncMock(return_value=None)
+        scores_col_mock.update_one = AsyncMock()
+
+        evals_col_mock = MagicMock()
+        evals_col_mock.insert_one = AsyncMock()
+        evals_col_mock.update_one = evals_update
+
+        with patch("src.storage.mongodb.scores_col", return_value=scores_col_mock), \
+             patch("src.storage.mongodb.evaluations_col", return_value=evals_col_mock), \
+             patch("src.api.v1.admin.scores_col", return_value=scores_col_mock), \
+             patch("src.api.v1.admin.evaluations_col", return_value=evals_col_mock), \
+             patch("src.core.mcp_client.get_server_manifest", side_effect=_fast_manifest), \
+             patch("src.core.mcp_client.evaluate_server", side_effect=_hang):
+
+            # per_server_timeout=1 so the test finishes in ~2s, not 20s
+            await admin_mod._run_batch_evaluation(
+                job_id=job_id,
+                urls=["https://slow1.example/mcp", "https://slow2.example/mcp"],
+                level=2,
+                force=True,
+                per_server_timeout=1,
+            )
+
+        job = admin_mod._batch_jobs[job_id]
+        assert job["status"] == "completed"
+        assert job["failed"] == 2
+        assert job["succeeded"] == 0
+        assert job["completed"] == 2
+        for r in job["results"]:
+            assert r["status"] == "error"
+            assert "timeout after 1s" in r["error"]
+
+        # Eval doc is updated to status=failed for audit trail
+        assert evals_update.await_count >= 2
+        for call in evals_update.await_args_list:
+            _filter, update = call.args
+            set_fields = update["$set"]
+            assert set_fields["status"] == "failed"
+            assert "timeout" in set_fields["error"]
