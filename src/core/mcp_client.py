@@ -270,7 +270,6 @@ async def get_server_manifest(server_url: str) -> dict:
     try:
         async with httpx.AsyncClient(timeout=CONNECT_TIMEOUT) as http:
             if transport_hint == "sse":
-                # SSE endpoints use GET — just do a HEAD to verify reachability
                 preflight = await http.head(server_url)
             else:
                 preflight = await http.post(
@@ -280,7 +279,9 @@ async def get_server_manifest(server_url: str) -> dict:
                 )
             if preflight.status_code in (401, 403):
                 raise ConnectionError(f"MCP server requires authentication ({preflight.status_code}): {server_url}")
-            if preflight.status_code == 404:
+            # HEAD-404 on SSE endpoints is unreliable — many SSE servers don't implement HEAD.
+            # Only treat 404 as "endpoint missing" when the preflight was a POST (streamable_http).
+            if preflight.status_code == 404 and transport_hint != "sse":
                 raise ConnectionError(f"MCP endpoint not found (404): {server_url}")
             if preflight.status_code >= 500:
                 raise ConnectionError(f"MCP server error ({preflight.status_code}): {server_url}")
@@ -496,7 +497,9 @@ async def manifest_and_evaluate(
                 )
             if preflight.status_code in (401, 403):
                 raise ConnectionError(f"MCP server requires authentication ({preflight.status_code}): {server_url}")
-            if preflight.status_code == 404:
+            # HEAD-404 on SSE endpoints is unreliable — many SSE servers don't implement HEAD.
+            # Only treat 404 as "endpoint missing" when the preflight was a POST (streamable_http).
+            if preflight.status_code == 404 and transport_hint != "sse":
                 raise ConnectionError(f"MCP endpoint not found (404): {server_url}")
             if preflight.status_code >= 500:
                 raise ConnectionError(f"MCP server error ({preflight.status_code}): {server_url}")
