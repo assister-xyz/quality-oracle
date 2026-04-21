@@ -1,0 +1,44 @@
+name: "Weekly MCP Batch Evaluation"
+
+# QO-049 Phase B — keeps /v1/scores and /report/april-2026 on laureum.ai
+# fresh by re-evaluating the public MCP registry once per week.
+# Runs Sunday 02:00 UTC. Manually triggerable via workflow_dispatch for
+# ad-hoc E2E testing without waiting for the cron.
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"
+  workflow_dispatch: {}
+
+concurrency:
+  group: weekly-batch
+  cancel-in-progress: false
+
+jobs:
+  batch:
+    name: Run weekly batch via public API
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install minimal deps
+        run: pip install "httpx>=0.27,<1.0"
+
+      - name: Run weekly batch
+        env:
+          LAUREUM_API_BASE: ${{ vars.LAUREUM_API_BASE || 'https://quality-oracle-api.assisterr.ai' }}
+          LAUREUM_API_KEY: ${{ secrets.LAUREUM_API_KEY }}
+        run: python dev/weekly_batch_via_api.py
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-batch-report-${{ github.run_id }}
+          path: reports/weekly-batch-*.md
+          retention-days: 90
