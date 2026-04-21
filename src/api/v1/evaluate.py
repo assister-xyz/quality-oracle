@@ -380,11 +380,13 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             else:
                 error_msg = f"Cannot connect to MCP server: {error_msg}"
             logger.error(f"Manifest fetch failed for {request.target_url}: {error_msg}")
+            error_type, _ = mcp_client.classify_connection_error(error_msg)
             await evaluations_col().update_one(
                 {"_id": evaluation_id},
                 {"$set": {
                     "status": EvalStatus.FAILED.value,
                     "error": error_msg,
+                    "error_type": error_type,
                 }},
             )
             return
@@ -834,9 +836,10 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         error_msg = str(e)
         if "'NoneType'" in error_msg or "AttributeError" in error_msg:
             error_msg = f"MCP server returned an unexpected response. The server may require authentication or be temporarily unavailable: {request.target_url}"
+        error_type, _ = mcp_client.classify_connection_error(error_msg)
         await evaluations_col().update_one(
             {"_id": evaluation_id},
-            {"$set": {"status": EvalStatus.FAILED.value, "error": error_msg}},
+            {"$set": {"status": EvalStatus.FAILED.value, "error": error_msg, "error_type": error_type}},
         )
 
 

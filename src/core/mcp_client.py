@@ -18,6 +18,38 @@ from mcp.types import TextContent
 
 logger = logging.getLogger(__name__)
 
+
+def classify_connection_error(msg: str) -> tuple[str, bool]:
+    """Classify an evaluation error message into a taxonomized error_type.
+
+    Returns (error_type, retryable). Kept surface-level so aggregates stay
+    small and easy to reason about across batch runs and the live API.
+
+    Taxonomy:
+      - dns          : DNS resolution / network unreachable
+      - 404          : MCP endpoint not found
+      - auth         : 401 / 403 / requires authentication
+      - timeout      : connection or handshake timeout
+      - server_5xx   : upstream HTTP 5xx (retryable)
+      - connection   : catch-all for other connection issues
+    """
+    if not msg:
+        return "unknown", False
+    lowered = msg.lower()
+    if "dns" in lowered or "network error" in lowered or "nodename" in lowered or "name or service not known" in lowered:
+        return "dns", False
+    if "404" in msg or "endpoint not found" in lowered:
+        return "404", False
+    if "401" in msg or "403" in msg or "requires authentication" in lowered or "unauthorized" in lowered or "forbidden" in lowered:
+        return "auth", False
+    if "timeout" in lowered or "timed out" in lowered:
+        return "timeout", True
+    for code in ("(500)", "(502)", "(503)", "(504)", " 500 ", " 502 ", " 503 ", " 504 "):
+        if code in msg:
+            return f"server_{code.strip('() ')}", True
+    return "connection", False
+
+
 # QO-047: Context-local evaluation_id for audit logging.
 # Set by the evaluator at the start of each eval, so all downstream
 # tool calls can write audit records linked by eval_id.

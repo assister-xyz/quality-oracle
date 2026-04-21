@@ -263,7 +263,7 @@
       "name": "CoinGecko",
       "transport": "streamable_http",
       "category": "finance",
-      "requires_auth": false,
+      "requires_auth": true,
       "source": "awesome_mcp"
     },
     {
