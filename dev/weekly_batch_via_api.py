@@ -36,6 +36,15 @@ SUBMIT_DELAY_SECONDS = 2
 POLL_INTERVAL_SECONDS = 15
 MAX_POLL_CYCLES = 40  # 10 minutes total upper bound
 
+# Score-protection: skip re-evaluating servers that already hold a strong
+# score within this window. Level-1 (free) Quick Scan caps output around
+# score=83, so running it over an existing Expert (93/92/87…) would
+# overwrite a deep-eval result with a baseline score — regression we want
+# to avoid in the weekly refresh. Expert deep-evals happen via paid Level-2+
+# manually / on-demand; the cron's job is liveness + basic/failed refresh.
+PROTECT_MIN_SCORE = 85  # Expert tier lower bound
+PROTECT_MAX_AGE_DAYS = 14
+
 
 async def _submit(client: httpx.AsyncClient, name: str, url: str) -> Dict[str, Any]:
     try:
@@ -61,6 +70,48 @@ async def _submit(client: httpx.AsyncClient, name: str, url: str) -> Dict[str, A
         "status": "submitted",
         "evaluation_id": d.get("evaluation_id"),
     }
+
+
+async def _fetch_existing_scores(client: httpx.AsyncClient) -> Dict[str, Dict[str, Any]]:
+    """Map target_id -> existing score record, used by the protection guard."""
+    try:
+        r = await client.get(
+            f"{API_BASE}/v1/scores?limit=100",
+            headers={"X-API-Key": API_KEY},
+        )
+        if r.status_code != 200:
+            print(f"Warn: /v1/scores returned {r.status_code}, protection guard disabled")
+            return {}
+        items = r.json().get("items", [])
+        return {it["target_id"]: it for it in items if it.get("target_id")}
+    except Exception as e:
+        print(f"Warn: could not fetch existing scores ({e}); protection guard disabled")
+        return {}
+
+
+def _should_skip(url: str, existing: Dict[str, Dict[str, Any]]) -> bool:
+    """Skip re-evaluation if server holds a fresh Expert-tier score.
+
+    Level-1 Quick Scan caps at ~83; running it over a 93 would regress the
+    server. The cron's job is freshness for mid/low tier — Expert entries
+    are refreshed via deeper manual evals.
+    """
+    rec = existing.get(url)
+    if not rec:
+        return False
+    score = rec.get("score") or 0
+    if score < PROTECT_MIN_SCORE:
+        return False
+    last = rec.get("last_evaluated_at")
+    if not last:
+        return False
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - dt).days
+        return age_days < PROTECT_MAX_AGE_DAYS
+    except Exception:
+        return False
 
 
 async def _poll(client: httpx.AsyncClient, eid: str) -> Dict[str, Any]:
@@ -90,6 +141,15 @@ async def main() -> int:
     print(f"Registry: {len(all_servers)} total, {len(no_auth)} no-auth candidates")
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        # Score-protection guard: fetch current prod state and skip servers
+        # that hold a fresh Expert-tier score to avoid Level-1 regression.
+        existing = await _fetch_existing_scores(client)
+        protected = [s for s in no_auth if _should_skip(s["url"], existing)]
+        to_submit = [s for s in no_auth if not _should_skip(s["url"], existing)]
+        if protected:
+            print(f"Protected {len(protected)} Expert-tier entries (skipped): " +
+                  ", ".join(s["name"] for s in protected))
+
         sem = asyncio.Semaphore(CONCURRENCY)
 
         async def bounded_submit(server: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,7 +158,7 @@ async def main() -> int:
                 await asyncio.sleep(SUBMIT_DELAY_SECONDS)
                 return out
 
-        submissions = await asyncio.gather(*[bounded_submit(s) for s in no_auth])
+        submissions = await asyncio.gather(*[bounded_submit(s) for s in to_submit])
         ok = [s for s in submissions if s["status"] == "submitted"]
         bad = [s for s in submissions if s["status"] != "submitted"]
         print(f"Submitted {len(ok)}/{len(submissions)} evaluations ({len(bad)} submission errors)")
