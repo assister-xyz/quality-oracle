@@ -146,6 +146,23 @@ def create_attestation(
         },
     }
 
+    # QO-051: Cost per Correct Response claims. Canonical public value is
+    # shadow_cpcr — free-tier actual cost is $0 which is meaningless for
+    # cross-vendor comparison. The aqvc:cpcr claim carries the actual rate
+    # so enterprise auditors can see the real in-house number too.
+    cpcr_block = evaluation_result.get("cpcr") or {}
+    if cpcr_block:
+        aqvc_payload["cost"] = {
+            "cost_usd": evaluation_result.get("cost_usd"),
+            "shadow_cost_usd": evaluation_result.get("shadow_cost_usd"),
+            "aqvc:cpcr": cpcr_block.get("cpcr"),
+            "aqvc:weighted_cpcr": cpcr_block.get("weighted_cpcr"),
+            "aqvc:shadow_cpcr": cpcr_block.get("shadow_cpcr"),
+            "correct_count": cpcr_block.get("correct_count", 0),
+            "correct_threshold": cpcr_block.get("correct_threshold", 70),
+            "total_responses": cpcr_block.get("total_responses", 0),
+        }
+
     # Add AIUC-1 alignment section
     try:
         from src.standards.aiuc1_mapping import generate_aiuc1_report

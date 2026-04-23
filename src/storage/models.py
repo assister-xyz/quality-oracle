@@ -134,6 +134,26 @@ class AuthMeResponse(BaseModel):
     last_login_at: Optional[datetime] = None
 
 
+# ── Cost per Correct Response (QO-051) ──────────────────────────────────────
+
+
+class CPCRScores(BaseModel):
+    """Three CPCR variants published per evaluation.
+
+    binary: cost_usd / correct_count (LayerLens/PinchBench-compatible).
+    weighted: cost_usd / sum(score/100) — honours partial credit.
+    shadow: shadow_cost_usd / correct_count — always published at public
+            market rates so free-tier evals remain comparable on the
+            leaderboard and in the AQVC credential.
+    """
+    correct_threshold: int = 70
+    correct_count: int = 0
+    total_responses: int = 0
+    cpcr: Optional[float] = None
+    weighted_cpcr: Optional[float] = None
+    shadow_cpcr: Optional[float] = None
+
+
 # Request models
 class EvaluateRequest(BaseModel):
     target_url: str
@@ -175,6 +195,12 @@ class ScoreResponse(BaseModel):
     attestation_url: Optional[str] = None
     last_eval_mode: Optional[str] = None
     manifest_hash: Optional[str] = None
+    # QO-051: cost + CPCR on the public score endpoint. shadow_cpcr is the
+    # canonical public value because free-tier evals would otherwise appear
+    # as $0/correct and be meaningless on the leaderboard.
+    cost_usd: Optional[float] = None
+    shadow_cost_usd: Optional[float] = None
+    cpcr: Optional[CPCRScores] = None
 
 
 class EvaluationStatus(BaseModel):

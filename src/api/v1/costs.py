@@ -163,9 +163,57 @@ async def get_cost_analytics(
             "market_input_per_m": v.get("market_input_per_m", v["input_per_m"]),
             "market_output_per_m": v.get("market_output_per_m", v["output_per_m"]),
             "tier": v["tier"],
+            "last_updated": v.get("last_updated"),
         }
         for k, v in PROVIDER_PRICING.items()
     }
+
+    # QO-051: CPCR aggregations — averaged across evaluations that have
+    # a non-null cpcr/shadow_cpcr (skip 0-correct evals to avoid biasing
+    # the mean downward).
+    cpcr_level_pipeline = [
+        {"$match": {**match_filter, "scores.cpcr.shadow_cpcr": {"$ne": None, "$exists": True}}},
+        {
+            "$group": {
+                "_id": "$level",
+                "avg_cpcr": {"$avg": "$scores.cpcr.cpcr"},
+                "avg_weighted_cpcr": {"$avg": "$scores.cpcr.weighted_cpcr"},
+                "avg_shadow_cpcr": {"$avg": "$scores.cpcr.shadow_cpcr"},
+                "count": {"$sum": 1},
+            }
+        },
+    ]
+    avg_cpcr_by_level = {}
+    async for doc in evaluations_col().aggregate(cpcr_level_pipeline):
+        level = doc["_id"] or 0
+        avg_cpcr_by_level[f"level_{level}"] = {
+            "count": doc["count"],
+            "avg_cpcr": round(doc["avg_cpcr"], 6) if doc["avg_cpcr"] is not None else None,
+            "avg_weighted_cpcr": round(doc["avg_weighted_cpcr"], 6) if doc["avg_weighted_cpcr"] is not None else None,
+            "avg_shadow_cpcr": round(doc["avg_shadow_cpcr"], 6) if doc["avg_shadow_cpcr"] is not None else None,
+        }
+
+    cpcr_domain_pipeline = [
+        {"$match": {**match_filter, "scores.cpcr.shadow_cpcr": {"$ne": None, "$exists": True}}},
+        {
+            "$group": {
+                "_id": {"$ifNull": ["$detected_domain", "general"]},
+                "avg_cpcr": {"$avg": "$scores.cpcr.cpcr"},
+                "avg_weighted_cpcr": {"$avg": "$scores.cpcr.weighted_cpcr"},
+                "avg_shadow_cpcr": {"$avg": "$scores.cpcr.shadow_cpcr"},
+                "count": {"$sum": 1},
+            }
+        },
+    ]
+    avg_cpcr_by_domain = {}
+    async for doc in evaluations_col().aggregate(cpcr_domain_pipeline):
+        domain = doc["_id"] or "unknown"
+        avg_cpcr_by_domain[domain] = {
+            "count": doc["count"],
+            "avg_cpcr": round(doc["avg_cpcr"], 6) if doc["avg_cpcr"] is not None else None,
+            "avg_weighted_cpcr": round(doc["avg_weighted_cpcr"], 6) if doc["avg_weighted_cpcr"] is not None else None,
+            "avg_shadow_cpcr": round(doc["avg_shadow_cpcr"], 6) if doc["avg_shadow_cpcr"] is not None else None,
+        }
 
     return {
         "period": period,
@@ -185,4 +233,6 @@ async def get_cost_analytics(
         "efficiency": efficiency,
         "optimization": optimization,
         "provider_pricing": pricing_ref,
+        "avg_cpcr_by_level": avg_cpcr_by_level,
+        "avg_cpcr_by_domain": avg_cpcr_by_domain,
     }

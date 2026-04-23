@@ -301,6 +301,11 @@ async def get_evaluation_status(
             "judging_ms": timing.get("judging_ms"),
             "total_ms": timing.get("total_ms"),
         }
+        # QO-051: surface CPCR in cost_summary so the FE can render a
+        # headline number without reaching into scores.cpcr.
+        cpcr_block = scores_data.get("cpcr") if scores_data else None
+        if isinstance(cpcr_block, dict):
+            cost_summary["cpcr"] = cpcr_block
 
     return EvaluationStatus(
         evaluation_id=evaluation_id,
@@ -555,6 +560,19 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
             if eval_result.token_usage:
                 scores["token_usage"] = eval_result.token_usage
                 scores["cost_usd"] = eval_result.cost_usd
+                scores["shadow_cost_usd"] = eval_result.shadow_cost_usd
+            # QO-051: Cost per Correct Response (3 variants). Gated via
+            # settings.enable_cpcr inside _maybe_compute_cpcr. Persist a
+            # sub-doc so /v1/score/{id} and /v1/costs can read it cheaply.
+            if eval_result.correct_count or eval_result.cpcr is not None or eval_result.shadow_cpcr is not None:
+                scores["cpcr"] = {
+                    "correct_threshold": settings.cpcr_correct_threshold,
+                    "correct_count": eval_result.correct_count,
+                    "total_responses": len([r for r in eval_result.judge_responses if "score" in r]),
+                    "cpcr": eval_result.cpcr,
+                    "weighted_cpcr": eval_result.weighted_cpcr,
+                    "shadow_cpcr": eval_result.shadow_cpcr,
+                }
             if domain_result:
                 scores["domain_scores"] = domain_result.domain_scores
                 if domain_result.irt_theta is not None:
@@ -746,6 +764,9 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
                     "last_eval_mode": request.eval_mode.value,
                     "last_token_usage": scores.get("token_usage"),
                     "last_cost_usd": scores.get("cost_usd"),
+                    "last_shadow_cost_usd": scores.get("shadow_cost_usd"),
+                    # QO-051: persist CPCR for cheap leaderboard sort by Value
+                    "last_cpcr": scores.get("cpcr"),
                     "gaming_risk": gaming_risk_data.get("level") if gaming_risk_data else None,
                     "manifest_hash": manifest_hash,
                     "detected_domain": detected_domain,
