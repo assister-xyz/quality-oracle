@@ -153,6 +153,8 @@ async def get_score(
                 tests_total=tdata.get("tests_total", 0),
             )
 
+    # QO-051: hydrate CPCR from last_cpcr (Pydantic coerces the dict)
+    cpcr_doc = doc.get("last_cpcr")
     resp_data = ScoreResponse(
         target_id=doc["target_id"],
         target_type=TargetType(doc.get("target_type", "mcp_server")),
@@ -164,6 +166,9 @@ async def get_score(
         tool_scores=parsed_tool_scores,
         last_eval_mode=normalize_eval_mode(doc.get("last_eval_mode")),
         manifest_hash=doc.get("manifest_hash"),
+        cost_usd=doc.get("last_cost_usd"),
+        shadow_cost_usd=doc.get("last_shadow_cost_usd"),
+        cpcr=cpcr_doc if isinstance(cpcr_doc, dict) else None,
     )
 
     # Cache for 5 min
@@ -223,6 +228,10 @@ async def list_scores(
             "manifest_hash": doc.get("manifest_hash"),
             "detected_domain": doc.get("detected_domain", "general"),
             "detected_domains": doc.get("detected_domains", []),
+            # QO-051: CPCR for leaderboard Value column (score / shadow_cpcr)
+            "cost_usd": doc.get("last_cost_usd"),
+            "shadow_cost_usd": doc.get("last_shadow_cost_usd"),
+            "cpcr": doc.get("last_cpcr"),
         })
 
     total = await scores_col().count_documents(query)

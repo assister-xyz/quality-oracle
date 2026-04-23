@@ -23,6 +23,22 @@ from src.core.question_pools import (
 
 logger = logging.getLogger(__name__)
 
+# ── QO-051: CPCR helper ─────────────────────────────────────────────────────
+
+
+def _maybe_compute_cpcr(result: "EvaluationResult") -> None:
+    """Compute CPCR variants if the feature flag is on.
+
+    Kept at module scope (not a method) so tests can invoke it directly
+    without constructing an Evaluator. Reads settings.enable_cpcr lazily
+    so env-var changes between tests take effect without reload.
+    """
+    from src.config import settings
+    if not settings.enable_cpcr:
+        return
+    result.compute_cpcr(correct_threshold=settings.cpcr_correct_threshold)
+
+
 # ── Early termination constants ─────────────────────────────────────────────
 
 EARLY_EXIT_MIN_SCORES = 4       # Minimum scores before considering exit
@@ -81,6 +97,19 @@ class EvaluationResult:
         # Token usage tracking
         self.token_usage: Optional[Dict[str, Any]] = None
         self.cost_usd: Optional[float] = None
+        # Shadow cost = market-rate cost (paid API equivalent). Kept as a
+        # first-class field so CPCR computation does not depend on the nested
+        # token_usage dict.
+        self.shadow_cost_usd: Optional[float] = None
+
+        # QO-051: Cost per Correct Response (3 variants — binary, weighted,
+        # shadow). Populated by _compute_cpcr() once judge_responses and
+        # cost data are available. All fields nullable → null propagates when
+        # evaluation produced 0 correct responses.
+        self.correct_count: int = 0
+        self.cpcr: Optional[float] = None
+        self.weighted_cpcr: Optional[float] = None
+        self.shadow_cpcr: Optional[float] = None
 
         # QO-054: input quality — fraction of tool calls that did NOT error.
         # A score from a run with low input_quality_rate is not a reliable
@@ -88,6 +117,43 @@ class EvaluationResult:
         self.input_quality_rate: Optional[float] = None
         self.total_tool_calls: int = 0
         self.errored_tool_calls: int = 0
+
+    def compute_cpcr(self, correct_threshold: int = 70) -> Dict[str, Any]:
+        """Compute the three CPCR variants from judge_responses + cost data.
+
+        Mutates self (correct_count, cpcr, weighted_cpcr, shadow_cpcr) and
+        returns the CPCRScores dict. Safe to call multiple times.
+
+        Shadow CPCR always uses market rates so free-tier evals remain
+        comparable across providers. Binary returns None when no response
+        met the correctness threshold (avoids div-by-zero, surfaces the
+        "we couldn't measure it" state to callers).
+        """
+        responses = [r for r in self.judge_responses if "score" in r]
+        total_responses = len(responses)
+        correct_count = sum(1 for r in responses if r["score"] >= correct_threshold)
+        self.correct_count = correct_count
+
+        cost = self.cost_usd or 0.0
+        shadow = self.shadow_cost_usd or 0.0
+
+        self.cpcr = round(cost / correct_count, 6) if correct_count > 0 else None
+        total_quality = sum(r["score"] for r in responses) / 100 if responses else 0
+        self.weighted_cpcr = (
+            round(cost / total_quality, 6) if total_quality > 0 else None
+        )
+        self.shadow_cpcr = (
+            round(shadow / correct_count, 6) if correct_count > 0 else None
+        )
+
+        return {
+            "correct_threshold": correct_threshold,
+            "correct_count": correct_count,
+            "total_responses": total_responses,
+            "cpcr": self.cpcr,
+            "weighted_cpcr": self.weighted_cpcr,
+            "shadow_cpcr": self.shadow_cpcr,
+        }
 
     def to_dict(self) -> dict:
         d = {
@@ -130,6 +196,17 @@ class EvaluationResult:
             d["token_usage"] = self.token_usage
         if self.cost_usd is not None:
             d["cost_usd"] = self.cost_usd
+        if self.shadow_cost_usd is not None:
+            d["shadow_cost_usd"] = self.shadow_cost_usd
+        if self.cpcr is not None or self.weighted_cpcr is not None or self.shadow_cpcr is not None or self.correct_count > 0:
+            d["cpcr"] = {
+                "correct_threshold": 70,
+                "correct_count": self.correct_count,
+                "total_responses": len([r for r in self.judge_responses if "score" in r]),
+                "cpcr": self.cpcr,
+                "weighted_cpcr": self.weighted_cpcr,
+                "shadow_cpcr": self.shadow_cpcr,
+            }
         return d
 
 
@@ -387,6 +464,8 @@ class Evaluator:
         }
         result.token_usage = token_data
         result.cost_usd = token_data.get("cost_usd", 0.0)
+        result.shadow_cost_usd = token_data.get("shadow_cost_usd", 0.0)
+        _maybe_compute_cpcr(result)
 
         logger.info(
             f"Evaluation complete: {target_id} | "
@@ -533,6 +612,8 @@ class Evaluator:
         token_data = self.collect_token_usage()
         result.token_usage = token_data
         result.cost_usd = token_data.get("cost_usd", 0.0)
+        result.shadow_cost_usd = token_data.get("shadow_cost_usd", 0.0)
+        _maybe_compute_cpcr(result)
 
         logger.info(
             f"Streaming eval complete: {target_id} | "
@@ -993,6 +1074,8 @@ class Evaluator:
         }
         result.token_usage = token_data
         result.cost_usd = token_data.get("cost_usd", 0.0)
+        result.shadow_cost_usd = token_data.get("shadow_cost_usd", 0.0)
+        _maybe_compute_cpcr(result)
 
         logger.info(
             f"Full evaluation: {target_id} | "

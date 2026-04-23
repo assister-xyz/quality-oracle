@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     audit_max_response_kb: int = 5
     audit_max_prompt_kb: int = 5
 
+    # ── QO-051: Cost per Correct Response (CPCR) metric ─────────────────────
+    # Gate the three CPCR variants (binary / weighted / shadow). Defaults to
+    # false so prod ships dark and the rollout is an intentional env flip.
+    # Local dev: set ENABLE_CPCR=true in .env. Prod: flip when ready.
+    # All CPCR fields are nullable so consumers degrade gracefully.
+    enable_cpcr: bool = False
+    cpcr_correct_threshold: int = 70  # matches judge rubric "correct result" band
+
     # ── GitHub OAuth (QO-046) ────────────────────────────────────────────────
     github_client_id: str = ""
     github_client_secret: str = ""
@@ -168,22 +176,32 @@ def get_base_url(request=None) -> str:
 # ── Provider Pricing (USD per 1M tokens) ────────────────────────────────────
 # Updated 2026-03-19. Free tiers tracked as $0 for quota monitoring.
 
+# last_updated (QO-051): date the market rate was verified against the
+# provider's public pricing page. Rates drift — consult this before trusting
+# shadow CPCR for cross-vendor comparisons older than ~90 days.
 PROVIDER_PRICING = {
     # actual = what we pay (free tier); market = paid API rate for same model
     "cerebras": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free",
-                 "market_input_per_m": 0.10, "market_output_per_m": 0.10},   # llama3.1-8b
+                 "market_input_per_m": 0.10, "market_output_per_m": 0.10,
+                 "last_updated": "2026-03-19"},  # llama3.1-8b
     "groq": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free",
-             "market_input_per_m": 0.05, "market_output_per_m": 0.08},       # llama-3.1-8b-instant
+             "market_input_per_m": 0.05, "market_output_per_m": 0.08,
+             "last_updated": "2026-03-19"},  # llama-3.1-8b-instant
     "openrouter": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free",
-                   "market_input_per_m": 0.09, "market_output_per_m": 1.10}, # qwen3-80b-a3b-instruct
+                   "market_input_per_m": 0.09, "market_output_per_m": 1.10,
+                   "last_updated": "2026-03-19"},  # qwen3-80b-a3b-instruct
     "gemini": {"input_per_m": 0.0, "output_per_m": 0.0, "tier": "free",
-               "market_input_per_m": 0.075, "market_output_per_m": 0.30},    # gemini-2.0-flash
+               "market_input_per_m": 0.075, "market_output_per_m": 0.30,
+               "last_updated": "2026-03-19"},  # gemini-2.0-flash
     "mistral": {"input_per_m": 0.1, "output_per_m": 0.3, "tier": "free",
-                "market_input_per_m": 0.1, "market_output_per_m": 0.3},
+                "market_input_per_m": 0.1, "market_output_per_m": 0.3,
+                "last_updated": "2026-03-19"},
     "deepseek": {"input_per_m": 0.14, "output_per_m": 0.28, "tier": "paid",
-                 "market_input_per_m": 0.14, "market_output_per_m": 0.28},
+                 "market_input_per_m": 0.14, "market_output_per_m": 0.28,
+                 "last_updated": "2026-03-19"},
     "openai": {"input_per_m": 0.15, "output_per_m": 0.60, "tier": "paid",
-               "market_input_per_m": 0.15, "market_output_per_m": 0.60},
+               "market_input_per_m": 0.15, "market_output_per_m": 0.60,
+               "last_updated": "2026-03-19"},
 }
 
 
