@@ -20,7 +20,7 @@ async def agent_card():
         "description": "Active competency verification for AI agents, MCP servers, and skills. "
                        "Submit any agent or MCP server for quality evaluation and receive "
                        "a verifiable quality score with AQVC (W3C VC) attestation.",
-        "url": "https://agenttrust.assisterr.ai",
+        "url": "https://laureum.ai",
         "version": "0.1.0",
         "protocolVersion": "0.3.0",
         "provider": {
@@ -96,7 +96,7 @@ async def quality_context():
     return JSONResponse(content={
         "@context": {
             "@version": 1.1,
-            "at": "https://agenttrust.assisterr.ai/vocab#",
+            "at": "https://laureum.ai/vocab#",
             "AgentQualityCredential": "at:AgentQualityCredential",
             "QualityEvaluation": "at:QualityEvaluation",
             "qualityScore": {"@id": "at:qualityScore", "@type": "https://www.w3.org/2001/XMLSchema#integer"},
@@ -118,7 +118,7 @@ async def extension_spec():
     Returns the JSON-LD-style schema describing the extension's roles and parameters.
     """
     return {
-        "@context": "https://agenttrust.assisterr.ai/ext/evaluation/v1",
+        "@context": "https://laureum.ai/ext/evaluation/v1",
         "name": "AgentTrust Evaluation Extension",
         "version": "1.0",
         "roles": ["provider", "verified_subject"],

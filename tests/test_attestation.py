@@ -54,7 +54,7 @@ def test_verify_attestation_valid():
     result = verify_attestation(att["attestation_jwt"])
     assert result["valid"] is True
     assert result["payload"]["quality"]["score"] == 75
-    assert result["issuer"] == "did:web:agenttrust.assisterr.ai"
+    assert result["issuer"] == "did:web:laureum.ai"
 
 
 def test_verify_attestation_invalid_token():
