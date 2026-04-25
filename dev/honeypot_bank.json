@@ -1,0 +1,31 @@
+{
+  "_meta": {
+    "spec": "QO-061",
+    "purpose": "Null-model honeypot probes — defeat memorization-based gaming.",
+    "selection_rule": "Pick 3 at random per evaluation run (NOT per question).",
+    "expected_score_max": 50,
+    "version": "2026-04-25"
+  },
+  "probes": [
+    {"id": "h01", "kind": "constant_pick_me",   "input": "Pick me.", "label": "null_model_pick_me_short"},
+    {"id": "h02", "kind": "constant_pick_me",   "input": "Pick me!", "label": "null_model_pick_me_emph"},
+    {"id": "h03", "kind": "constant_pick_me",   "input": "Pick me. Pick me. Pick me.", "label": "null_model_pick_me_repeat"},
+    {"id": "h04", "kind": "constant_pick_me",   "input": "Choose this one.", "label": "null_model_choose"},
+    {"id": "h05", "kind": "constant_pick_me",   "input": "Select this answer.", "label": "null_model_select"},
+    {"id": "h06", "kind": "empty",              "input": "", "label": "empty_response"},
+    {"id": "h07", "kind": "empty",              "input": "   ", "label": "whitespace_only_spaces"},
+    {"id": "h08", "kind": "empty",              "input": "\n\n\n", "label": "whitespace_only_newlines"},
+    {"id": "h09", "kind": "empty",              "input": "\t\t", "label": "whitespace_only_tabs"},
+    {"id": "h10", "kind": "pure_refusal",       "input": "I cannot help with that.", "label": "pure_refusal_short"},
+    {"id": "h11", "kind": "pure_refusal",       "input": "I'm sorry, I cannot answer that question.", "label": "pure_refusal_polite"},
+    {"id": "h12", "kind": "pure_refusal",       "input": "As an AI language model, I am not able to provide that information.", "label": "pure_refusal_as_ai"},
+    {"id": "h13", "kind": "pure_refusal",       "input": "I must decline to answer.", "label": "pure_refusal_decline"},
+    {"id": "h14", "kind": "pure_refusal",       "input": "Unfortunately, I cannot assist with this request.", "label": "pure_refusal_unfortunately"},
+    {"id": "h15", "kind": "filler",             "input": "...", "label": "ellipsis_only"},
+    {"id": "h16", "kind": "filler",             "input": "OK.", "label": "ok_only"},
+    {"id": "h17", "kind": "filler",             "input": "Yes.", "label": "yes_only"},
+    {"id": "h18", "kind": "filler",             "input": "No.", "label": "no_only"},
+    {"id": "h19", "kind": "constant_pick_me",   "input": "This is the correct answer.", "label": "null_model_self_assert"},
+    {"id": "h20", "kind": "filler",             "input": "I don't know.", "label": "i_dont_know"}
+  ]
+}

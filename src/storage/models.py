@@ -351,6 +351,35 @@ class FeedbackDoc(BaseModel):
     details: Optional[str] = None
     submitted_by: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # ── QO-061: eval-score snapshot for honest correlation ──────────────
+    # Captured at write time so the correlation engine pairs feedback against
+    # the eval score that was current WHEN the user reported the outcome —
+    # not the eval score whenever the report is queried.
+    eval_score_at_time: Optional[int] = None
+    # KYA tier of the reporter at time of submission. Weights the row in the
+    # weighted Pearson correlation: free=1.0, builder=2.0, team=3.0.
+    reporter_kya_tier: int = 1
+    # Set to "legacy_kya_unknown" by the QO-061 backfill migration on rows
+    # that pre-date the schema change. Downstream readers must surface this.
+    data_quality_warning: Optional[str] = None
+
+
+class FeedbackSnapshot(BaseModel):
+    """Paired (eval_score, outcome_score) row for the correlation engine.
+
+    QO-061: replaces the old `(target_id, eval_score, feedback_items)` tuple
+    that was passed to `compute_correlation_report`. The whole point of this
+    model is to make the eval-score snapshot a first-class field — the OLD
+    code computed Pearson on `(feedback_index, outcome)` (a drift detector,
+    not anti-sandbagging).
+    """
+    target_id: str
+    eval_score_at_time: float
+    feedback_outcome: float          # outcome_score 0-100
+    reporter_kya_tier: int = 1       # 1=free, 2=builder, 3=team
+    weight: float = 1.0
+    timestamp: Optional[datetime] = None
+    data_quality_warning: Optional[str] = None
 
 
 # ── Battle Arena ─────────────────────────────────────────────────────────────
