@@ -1438,3 +1438,231 @@ class Evaluator:
             result.tier,
         )
         return result
+
+    # ── QO-058: generic agent evaluation ────────────────────────────────────
+
+    async def evaluate_a2a(
+        self,
+        target,
+        *,
+        questions=None,
+        capability_id: Optional[str] = None,
+    ) -> "EvaluationResult":
+        """Evaluate an A2A agent target.
+
+        Sends each question via :meth:`A2ATarget.invoke`, judges the
+        response with ``self.llm_judge.ajudge``, and returns an
+        :class:`EvaluationResult` populated with overall_score, axis weights
+        (manifest-aware DEFAULT_WEIGHTS), and provenance.
+
+        Parameters
+        ----------
+        target:
+            Anything satisfying :class:`EvaluationTarget` — typically
+            :class:`A2ATarget`. Must have ``discover()`` already called OR
+            be ready to discover lazily.
+        questions:
+            Optional iterable of objects with ``.text`` (and ideally
+            ``.expected``). When None, uses the QuestionSelector default
+            sample for the L2 functional level.
+        capability_id:
+            Skill/capability id to invoke. When None, picks the first
+            capability returned by :meth:`list_capabilities`.
+
+        Returns
+        -------
+        :class:`EvaluationResult`
+            With ``target_type_dispatched=A2A_AGENT``, ``axis_weights_used``
+            from :func:`axis_weights.get_weights`, ``judge_responses``
+            populated, and a tier from :func:`question_pools.determine_tier`.
+        """
+        from src.core.axis_weights import get_weights
+        from src.storage.models import TargetType as _TargetType
+
+        start = time.time()
+        result = EvaluationResult()
+        result.target_type_dispatched = _TargetType.A2A_AGENT
+        result.subject_uri = getattr(target, "endpoint_url", "")
+
+        # Discover + capability selection
+        manifest = await target.discover()
+        result.axis_weights_used = get_weights(
+            _TargetType.A2A_AGENT, has_manifest=True
+        )
+        capabilities = await target.list_capabilities()
+        if not capabilities:
+            raise ValueError("evaluate_a2a: target has no capabilities")
+        cap_id = capability_id or capabilities[0].id
+
+        # Default question set — one per capability (small probe; the
+        # full domain expert L3 is QO-068 territory).
+        if questions is None:
+            qs = list(self.question_selector.sample("general", n=10))
+        else:
+            qs = list(questions)
+        result.questions_asked = len(qs)
+
+        scores: List[int] = []
+        for q in qs:
+            text = getattr(q, "text", str(q))
+            expected = getattr(q, "expected", "") or getattr(q, "answer", "")
+            try:
+                inv = await target.invoke(cap_id, {"message": text})
+                ans = inv.text
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("a2a invoke failed: %s", exc)
+                ans = ""
+            jr = await self.llm_judge.ajudge(text, expected, ans)
+            score = int(getattr(jr, "score", 0))
+            scores.append(score)
+            result.judge_responses.append(
+                {"question": text, "score": score, "answer": ans}
+            )
+        result.overall_score = int(sum(scores) / len(scores)) if scores else 0
+        result.questions_answered = sum(1 for s in scores if s > 0)
+        result.tier = determine_tier(result.overall_score)
+        result.confidence = round(min(0.95, len(scores) / 30), 2) if scores else 0.0
+        result.duration_ms = int((time.time() - start) * 1000)
+        hash_data = (
+            f"{result.subject_uri}:{result.overall_score}:"
+            f"{result.questions_asked}:{int(time.time())}"
+        )
+        result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
+        try:
+            tu = self.collect_token_usage()
+            result.token_usage = tu
+            result.cost_usd = tu.get("cost_usd", 0.0)
+            result.shadow_cost_usd = tu.get("shadow_cost_usd", 0.0)
+            _maybe_compute_cpcr(result)
+        except Exception:  # pragma: no cover
+            pass
+        # Carry provenance to result for downstream audit.
+        try:
+            result.style_report = {
+                "provenance": target.get_provenance(),
+                "manifest_id": manifest.id,
+            }
+        except Exception:  # pragma: no cover
+            pass
+        logger.info(
+            "A2A evaluation: target=%s score=%d tier=%s",
+            result.subject_uri, result.overall_score, result.tier,
+        )
+        return result
+
+    async def evaluate_rest_chat(
+        self,
+        target,
+        *,
+        questions=None,
+    ) -> "EvaluationResult":
+        """Evaluate a manifest-less REST-chat target.
+
+        Differs from :meth:`evaluate_a2a` in three ways (per spec §"REST
+        chat target"):
+
+        1. Axis weights = :data:`MANIFEST_LESS_WEIGHTS` (latency &
+           schema_quality zeroed, accuracy/safety up-weighted).
+        2. Tier capped at "verified" regardless of score (AC7) — UNLESS
+           ``manifest.confidence == "high"`` (operator escalated via
+           OpenAPI doc or n=10 calibration + correlation rows).
+        3. ``discover()`` may raise :class:`SchemaUnobtainableError`
+           which we catch and return ``tier="failed"``,
+           ``error_type="schema_unobtainable"`` (AC11).
+        """
+        from src.core.axis_weights import get_weights
+        from src.core.evaluation_target import SchemaUnobtainableError
+        from src.storage.models import TargetType as _TargetType
+
+        start = time.time()
+        result = EvaluationResult()
+        result.target_type_dispatched = _TargetType.REST_CHAT
+        result.subject_uri = getattr(target, "endpoint_url", "")
+        result.axis_weights_used = get_weights(
+            _TargetType.REST_CHAT, has_manifest=False
+        )
+
+        try:
+            manifest = await target.discover()
+        except SchemaUnobtainableError as exc:
+            result.tier = "failed"
+            result.overall_score = 0
+            result.confidence = 0.0
+            result.duration_ms = int((time.time() - start) * 1000)
+            result.style_report = {
+                "error": str(exc), "error_type": "schema_unobtainable",
+                "provenance": target.get_provenance() if hasattr(target, "get_provenance") else {},
+            }
+            logger.warning("REST chat eval refused (schema unobtainable): %s", exc)
+            return result
+
+        if questions is None:
+            qs = list(self.question_selector.sample("general", n=10))
+        else:
+            qs = list(questions)
+        result.questions_asked = len(qs)
+
+        scores: List[int] = []
+        for q in qs:
+            text = getattr(q, "text", str(q))
+            expected = getattr(q, "expected", "") or getattr(q, "answer", "")
+            try:
+                inv = await target.invoke("chat", {"message": text})
+                ans = inv.text
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("rest_chat invoke failed: %s", exc)
+                ans = ""
+            jr = await self.llm_judge.ajudge(text, expected, ans)
+            score = int(getattr(jr, "score", 0))
+            scores.append(score)
+            result.judge_responses.append(
+                {"question": text, "score": score, "answer": ans}
+            )
+
+        result.overall_score = int(sum(scores) / len(scores)) if scores else 0
+        result.questions_answered = sum(1 for s in scores if s > 0)
+
+        # AC7 — Verified-tier cap unless inference confidence escalated.
+        baseline_tier = determine_tier(result.overall_score)
+        if manifest.confidence == "high":
+            result.tier = baseline_tier
+        else:
+            # Cap at verified — never proficient/expert without a manifest.
+            if baseline_tier in ("expert", "proficient"):
+                result.tier = "verified"  # type: ignore[assignment]
+            elif baseline_tier == "basic":
+                result.tier = "basic"
+            else:
+                result.tier = baseline_tier
+
+        result.confidence = round(min(0.85, len(scores) / 30), 2) if scores else 0.0
+        result.duration_ms = int((time.time() - start) * 1000)
+        hash_data = (
+            f"{result.subject_uri}:{result.overall_score}:"
+            f"{result.questions_asked}:{int(time.time())}"
+        )
+        result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
+        try:
+            tu = self.collect_token_usage()
+            result.token_usage = tu
+            result.cost_usd = tu.get("cost_usd", 0.0)
+            result.shadow_cost_usd = tu.get("shadow_cost_usd", 0.0)
+            _maybe_compute_cpcr(result)
+        except Exception:  # pragma: no cover
+            pass
+        try:
+            result.style_report = {
+                "provenance": target.get_provenance(),
+                "tier_cap_reason": (
+                    None if manifest.confidence == "high" else "no_manifest"
+                ),
+                "inference_confidence": manifest.confidence,
+            }
+        except Exception:  # pragma: no cover
+            pass
+        logger.info(
+            "REST chat evaluation: target=%s score=%d tier=%s confidence=%s",
+            result.subject_uri, result.overall_score, result.tier,
+            manifest.confidence,
+        )
+        return result
