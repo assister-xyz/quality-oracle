@@ -31,6 +31,9 @@ openskill==6.1.0
 web3>=6.0.0
 eth-account>=0.8.0
 
+# Skill parser (QO-053-A)
+strictyaml>=1.7.3
+
 # Utils
 python-dotenv==1.0.1
 python-multipart==0.0.20
