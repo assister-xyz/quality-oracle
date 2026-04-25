@@ -459,7 +459,19 @@ class ConsensusJudge:
                         valid_results, scores, used_judges={llm_judges[0], confirmer},
                     )
                 except Exception as e:
-                    logger.warning(f"Cascade confirmer failed: {e}; falling through to full consensus.")
+                    logger.warning(
+                        f"Cascade confirmer failed: {e}; falling through to full consensus."
+                    )
+                    # Confirmer healthcheck/quota failed — fall through to a
+                    # FULL-CONSENSUS path that uses the remaining judges
+                    # (skipping the failed confirmer). We must NOT accept the
+                    # primary score alone (that would re-introduce the null-model
+                    # attack regime).
+                    return await self._full_consensus_after_disagreement(
+                        question, expected, answer, llm_judges,
+                        [first_result], [first_result.score],
+                        used_judges={llm_judges[0], confirmer},
+                    )
 
         # ── Phase 3: standard 2-judge consensus (non-decisive) ────────────
         if len(llm_judges) >= 2:
