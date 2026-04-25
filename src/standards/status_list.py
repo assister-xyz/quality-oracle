@@ -38,7 +38,6 @@ from src.standards.aqvc import (
     DEFAULT_ISSUER_DID,
     LAUREUM_VC_CONTEXT,
     STATUS_LIST_CREDENTIAL_URL,
-    _now_iso,
     _sign_eddsa_jcs_2022,
 )
 
