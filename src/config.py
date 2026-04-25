@@ -139,6 +139,20 @@ class Settings(BaseSettings):
     enable_cpcr: bool = False
     cpcr_correct_threshold: int = 70  # matches judge rubric "correct result" band
 
+    # ── Skill Activation Adapter (QO-053-B) ──────────────────────────────────
+    # Default provider per CB1 (DECISIONS.md): Cerebras free tier. Anthropic
+    # Sonnet is opt-in via LAUREUM_ACTIVATION_PROVIDER=anthropic; system stays
+    # functional out of the box on free tier alone.
+    laureum_activation_model: str = "cerebras:llama3.1-8b"
+    # Provider override. Acceptable values: cerebras (default), groq, anthropic.
+    laureum_activation_provider: str = "cerebras"
+    laureum_activation_temp: float = 0.2
+    laureum_activation_max_tokens: int = 2048
+    # Comma-separated rotation pool (matches GROQ_API_KEY pattern in llm_judge.py).
+    cerebras_api_keys: str = ""
+    # Anthropic Sonnet minimum cacheable prompt size (cache_control rejected below).
+    anthropic_min_cacheable_tokens: int = 2048
+
     # ── GitHub OAuth (QO-046) ────────────────────────────────────────────────
     github_client_id: str = ""
     github_client_secret: str = ""

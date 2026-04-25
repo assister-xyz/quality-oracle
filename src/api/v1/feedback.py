@@ -17,10 +17,27 @@ from src.storage.models import (
     FeedbackResponse,
     CorrelationResponse,
 )
-from src.core.correlation import compute_correlation_report
+from src.core.correlation import compute_correlation_report, KYA_TIER_WEIGHTS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# QO-061: API-key tier → reporter KYA tier mapping. Used at feedback-write time
+# to snapshot the reporter's trust tier so the correlation engine can apply
+# weighted Pearson correlation regardless of how tiers shift later.
+_KYA_TIER_BY_API_TIER = {
+    "free": 1,
+    "developer": 2,
+    "builder": 2,
+    "team": 3,
+    "marketplace": 3,
+}
+
+
+def _kya_tier_for_api_key(api_key_doc: dict) -> int:
+    """Resolve KYA tier from API key tier; default 1 (free)."""
+    return _KYA_TIER_BY_API_TIER.get(api_key_doc.get("tier", "free"), 1)
 
 
 @router.post("/feedback", response_model=FeedbackResponse)
@@ -44,6 +61,12 @@ async def submit_feedback(
                    "Target must be evaluated before feedback can be submitted.",
         )
 
+    # QO-061: snapshot the eval score at feedback-write time. The correlation
+    # engine pairs feedback against the eval that was current WHEN the user
+    # reported the outcome — not whatever the score is when the report is run.
+    eval_score_at_time = int(score_doc.get("current_score", 0))
+    reporter_kya_tier = _kya_tier_for_api_key(api_key_doc)
+
     doc = {
         "_id": feedback_id,
         "target_id": request.target_id,
@@ -54,6 +77,10 @@ async def submit_feedback(
         "details": request.details,
         "submitted_by": api_key_doc.get("_id"),
         "created_at": datetime.utcnow(),
+        # QO-061 schema additions
+        "eval_score_at_time": eval_score_at_time,
+        "reporter_kya_tier": reporter_kya_tier,
+        "kya_weight": KYA_TIER_WEIGHTS.get(reporter_kya_tier, 1.0),
     }
     await feedback_col().insert_one(doc)
 
@@ -106,6 +133,11 @@ async def get_correlation(
             "outcome_score": doc.get("outcome_score", 0),
             "context": doc.get("context"),
             "created_at": doc.get("created_at"),
+            # QO-061 fields — passed through so compute_correlation_report can
+            # use the recorded snapshot rather than back-filling.
+            "eval_score_at_time": doc.get("eval_score_at_time"),
+            "reporter_kya_tier": doc.get("reporter_kya_tier", 1),
+            "data_quality_warning": doc.get("data_quality_warning"),
         })
 
     # Reverse to chronological order for correlation computation
