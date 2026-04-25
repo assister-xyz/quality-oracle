@@ -7,9 +7,30 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class TargetType(str, Enum):
+    # ── Original triplet (pre-QO-058) ──────────────────────────────────────
     MCP_SERVER = "mcp_server"
-    AGENT = "agent"
+    AGENT = "agent"  # legacy generic-agent slot — pre-058 dispatch did nothing
     SKILL = "skill"
+    # ── QO-058: generic agent protocols ────────────────────────────────────
+    # A2A_AGENT  — Google Agent2Agent v1.0 (12 Mar 2026), agent-card.json
+    # REST_CHAT  — manifest-less generic REST/JSON chat agents (long tail).
+    #              Capped at Verified tier unless OpenAPI doc supplied or
+    #              calibration n=10 + correlation feedback ≥10 escalates
+    #              `inference_confidence` from medium → high (spec §"Path to
+    #              Certified for manifest-less").
+    # OPENAPI_AGENT — Generic OpenAPI/Swagger-described agent. Manifest is
+    #                 the OpenAPI doc → full 6-axis weights apply.
+    # UNKNOWN     — placeholder pre-resolution; the discovery cascade rewrites
+    #               it to a concrete type before evaluator dispatch.
+    #
+    # Migration note: legacy rows with target_type='agent' need NO migration —
+    # the dispatcher routes them to the not-implemented branch in 053-C and
+    # 058 leaves that path alone (fail-fast). New evaluations submit one of
+    # the four new values explicitly.
+    A2A_AGENT = "a2a_agent"
+    REST_CHAT = "rest_chat"
+    OPENAPI_AGENT = "openapi_agent"
+    UNKNOWN = "unknown"
 
 
 class EvalStatus(str, Enum):
