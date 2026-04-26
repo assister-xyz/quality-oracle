@@ -19,8 +19,18 @@ htmlcov/
 .coverage
 tests/
 
-# Dev tools
-dev/
+# Dev tools — most of dev/ stays out, but seed-question packs +
+# Phase-0 fixtures + honeypot bank are required at runtime by
+# question_pack_selector, skill_probes, and null_model_honeypots.
+# Exclude only the dev scripts and large fixtures.
+dev/__pycache__/
+dev/*.py
+dev/mock-mcp-server/
+dev/question-generation/
+dev/setup_fixtures.sh
+dev/judge_gold_standard.json
+dev/judge_baseline_results.json
+dev/registry.json
 reports/
 
 # Environment
