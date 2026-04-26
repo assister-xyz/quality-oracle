@@ -8,6 +8,22 @@ from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
+def pytest_configure(config):
+    """Register custom pytest markers used by the wiring suite."""
+    config.addinivalue_line(
+        "markers",
+        "live_cerebras: tests that hit real Cerebras API (free tier)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "live_anthropic: tests that hit real Anthropic API",
+    )
+    config.addinivalue_line(
+        "markers",
+        "live_l3: tests that need Docker daemon (heavy)",
+    )
+
+
 @pytest.fixture()
 def mock_api_key_doc():
     """A valid API key document as returned by validate_api_key."""
