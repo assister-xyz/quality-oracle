@@ -38,6 +38,11 @@ strictyaml>=1.7.3
 anthropic>=0.39.0
 cerebras-cloud-sdk>=1.0.0
 
+# L3 Claude Code SDK harness (QO-059) — only loaded host-side for type hints
+# and the live regression suite. The actual runtime install is inside
+# images/laureum-claude-code-runner/Dockerfile.
+claude-agent-sdk>=0.1.0
+
 # Utils
 python-dotenv==1.0.1
 python-multipart==0.0.20

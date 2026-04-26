@@ -1,0 +1,9 @@
+{
+  "name": "laureum-claude-code-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QO-059 L3 activation harness — Claude Code CLI inside a sandboxed image.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "*"
+  }
+}
