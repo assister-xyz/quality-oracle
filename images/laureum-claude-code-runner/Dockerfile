@@ -38,8 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # claude-code CLI (npm) — pinned in package.json for reproducibility (AC5).
 COPY package.json /opt/runner/package.json
-RUN cd /opt/runner && npm install -g $(jq -r '.dependencies | keys | .[] + "@" + .[. ]' < package.json) || \
-    npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code && which claude
 
 # claude-agent-sdk + anthropic (pip).
 # `--ignore-installed` because Ubuntu's python3-pip pulls in distro-managed
