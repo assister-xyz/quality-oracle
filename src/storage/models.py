@@ -51,6 +51,13 @@ class QualityTier(str, Enum):
     PROFICIENT = "proficient"
     BASIC = "basic"
     FAILED = "failed"
+    # Skill-eval tiers (R7 §9 + QO-053-E AC9). The skill ladder is distinct
+    # from the MCP ladder (verified < bronze < silver < gold) and surfaces
+    # via the same status endpoint so a single ScoreResponse covers both.
+    VERIFIED = "verified"
+    BRONZE = "bronze"
+    SILVER = "silver"
+    GOLD = "gold"
 
 
 class ConnectionStrategy(str, Enum):

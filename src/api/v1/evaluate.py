@@ -1088,12 +1088,18 @@ async def _run_evaluation_skill(evaluation_id: str, request: EvaluateRequest):
             judge, eval_mode=request.eval_mode.value, irt_service=irt_service,
         )
 
-        # No activator is wired here — QO-053-F adds the activator factory.
-        # We still run the rubric path so AC1 (dispatch reached) is provable.
+        # Wire activator factory per requested level. Defaults to Cerebras
+        # free tier (settings.laureum_activation_provider). Returns None when
+        # the deployment lacks credentials — evaluator falls back gracefully
+        # to the L1 manifest-only path so eval still completes with the
+        # deterministic Phase-0 probe pack.
+        from src.core.activator_factory import make_activator_factory
+        activator_factory = make_activator_factory(parsed, skill_dir, request.level)
+        target.skill_dir = skill_dir  # exposed for SkillProbeRunner phase-1
         eval_result = await evaluator.evaluate_skill(
             target=target,
             level=request.level,
-            activator_factory=None,
+            activator_factory=activator_factory,
             baseline_activator_factory=None,
         )
 
