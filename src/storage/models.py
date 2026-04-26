@@ -3,13 +3,34 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TargetType(str, Enum):
+    # ── Original triplet (pre-QO-058) ──────────────────────────────────────
     MCP_SERVER = "mcp_server"
-    AGENT = "agent"
+    AGENT = "agent"  # legacy generic-agent slot — pre-058 dispatch did nothing
     SKILL = "skill"
+    # ── QO-058: generic agent protocols ────────────────────────────────────
+    # A2A_AGENT  — Google Agent2Agent v1.0 (12 Mar 2026), agent-card.json
+    # REST_CHAT  — manifest-less generic REST/JSON chat agents (long tail).
+    #              Capped at Verified tier unless OpenAPI doc supplied or
+    #              calibration n=10 + correlation feedback ≥10 escalates
+    #              `inference_confidence` from medium → high (spec §"Path to
+    #              Certified for manifest-less").
+    # OPENAPI_AGENT — Generic OpenAPI/Swagger-described agent. Manifest is
+    #                 the OpenAPI doc → full 6-axis weights apply.
+    # UNKNOWN     — placeholder pre-resolution; the discovery cascade rewrites
+    #               it to a concrete type before evaluator dispatch.
+    #
+    # Migration note: legacy rows with target_type='agent' need NO migration —
+    # the dispatcher routes them to the not-implemented branch in 053-C and
+    # 058 leaves that path alone (fail-fast). New evaluations submit one of
+    # the four new values explicitly.
+    A2A_AGENT = "a2a_agent"
+    REST_CHAT = "rest_chat"
+    OPENAPI_AGENT = "openapi_agent"
+    UNKNOWN = "unknown"
 
 
 class EvalStatus(str, Enum):
@@ -51,6 +72,50 @@ def normalize_eval_mode(raw: Optional[str]) -> Optional[str]:
         return None
     _COMPAT = {"quick": "verified", "standard": "certified", "full": "audited"}
     return _COMPAT.get(raw, raw)
+
+
+# ── QO-053-C (CB3): public-name → (EvalLevel, EvalMode) mapping ─────────────
+#
+# The codebase enum at ``EvalLevel`` is ``MANIFEST=1, FUNCTIONAL=2,
+# DOMAIN_EXPERT=3``. The public copy in landing-page tier names ("L1
+# functional", "L2 certified", "L3 stress / audited") used in QO-053 specs
+# is *display only*. This helper maps a freeform public-name string into
+# the actual ``(EvalLevel, EvalMode)`` tuple consumed by the dispatcher.
+
+_PUBLIC_LEVEL_MAP: Dict[str, "tuple[EvalLevel, EvalMode]"] = {
+    # L1 — manifest validation only.
+    "l1": (EvalLevel.MANIFEST, EvalMode.VERIFIED),
+    "l1 functional": (EvalLevel.MANIFEST, EvalMode.VERIFIED),
+    "l1-functional": (EvalLevel.MANIFEST, EvalMode.VERIFIED),
+    # L2 — functional / certified.
+    "l2": (EvalLevel.FUNCTIONAL, EvalMode.CERTIFIED),
+    "l2 certified": (EvalLevel.FUNCTIONAL, EvalMode.CERTIFIED),
+    "l2-certified": (EvalLevel.FUNCTIONAL, EvalMode.CERTIFIED),
+    # L3 — domain expert / stress / audited.
+    "l3": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+    "l3 stress": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+    "l3 audited": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+    "l3-stress": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+    "l3-audited": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+}
+
+
+def level_for_skill_eval(public_name: str) -> "tuple[EvalLevel, EvalMode]":
+    """Resolve a spec/landing-page public level name into the codebase enums.
+
+    >>> level_for_skill_eval("L2 certified")
+    (<EvalLevel.FUNCTIONAL: 2>, <EvalMode.CERTIFIED: 'certified'>)
+
+    Unknown names raise ``ValueError`` rather than silently picking a default
+    so a typo in a question-pack manifest fails loudly during ingest.
+    """
+    key = (public_name or "").strip().lower()
+    if key in _PUBLIC_LEVEL_MAP:
+        return _PUBLIC_LEVEL_MAP[key]
+    raise ValueError(
+        f"Unknown skill-eval public level {public_name!r}. "
+        f"Valid: {sorted(set(_PUBLIC_LEVEL_MAP))}"
+    )
 
 
 # ── Sybil Defense (QO-044) ───────────────────────────────────────────────────
@@ -276,6 +341,17 @@ class EvaluationDoc(BaseModel):
     duration_ms: Optional[int] = None
     error: Optional[str] = None
 
+    # ── QO-053-C (CB3 + AC9): per-target dispatch + differential audit fields
+    # All optional → existing MCP eval documents remain valid without
+    # migration. Migration script ``dev/migrate_legacy_evaluations.py`` fills
+    # ``target_type_dispatched`` for any pre-053-C row.
+    target_type_dispatched: Optional[TargetType] = None
+    subject_uri: Optional[str] = None
+    axis_weights_used: Optional[Dict[str, float]] = None
+    delta_vs_baseline: Optional[float] = None
+    baseline_score: Optional[float] = None
+    baseline_status: Optional[str] = None  # "ok" | "failed" | None
+
 
 class ScoreDoc(BaseModel):
     target_id: str
@@ -351,6 +427,35 @@ class FeedbackDoc(BaseModel):
     details: Optional[str] = None
     submitted_by: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # ── QO-061: eval-score snapshot for honest correlation ──────────────
+    # Captured at write time so the correlation engine pairs feedback against
+    # the eval score that was current WHEN the user reported the outcome —
+    # not the eval score whenever the report is queried.
+    eval_score_at_time: Optional[int] = None
+    # KYA tier of the reporter at time of submission. Weights the row in the
+    # weighted Pearson correlation: free=1.0, builder=2.0, team=3.0.
+    reporter_kya_tier: int = 1
+    # Set to "legacy_kya_unknown" by the QO-061 backfill migration on rows
+    # that pre-date the schema change. Downstream readers must surface this.
+    data_quality_warning: Optional[str] = None
+
+
+class FeedbackSnapshot(BaseModel):
+    """Paired (eval_score, outcome_score) row for the correlation engine.
+
+    QO-061: replaces the old `(target_id, eval_score, feedback_items)` tuple
+    that was passed to `compute_correlation_report`. The whole point of this
+    model is to make the eval-score snapshot a first-class field — the OLD
+    code computed Pearson on `(feedback_index, outcome)` (a drift detector,
+    not anti-sandbagging).
+    """
+    target_id: str
+    eval_score_at_time: float
+    feedback_outcome: float          # outcome_score 0-100
+    reporter_kya_tier: int = 1       # 1=free, 2=builder, 3=team
+    weight: float = 1.0
+    timestamp: Optional[datetime] = None
+    data_quality_warning: Optional[str] = None
 
 
 # ── Battle Arena ─────────────────────────────────────────────────────────────
@@ -524,3 +629,182 @@ class LadderEntry(BaseModel):
     last_challenge_at: Optional[datetime] = None
     seeded_at: datetime = Field(default_factory=datetime.utcnow)
     defenses: int = 0
+
+
+# ── Skill Parser & Spec Compliance (QO-053-A) ────────────────────────────────
+
+
+class Severity(str, Enum):
+    """Severity tier for spec violations and anti-pattern findings."""
+    HIGH = "high"
+    MED = "med"
+    LOW = "low"
+
+
+class ParsedSkill(BaseModel):
+    """Parsed Anthropic Agent-Skills SKILL.md (R1 mirror).
+
+    Fields populated by `core.skill_parser.parse_skill_md`. Extra YAML keys land
+    in `frontmatter_raw` so callers can inspect off-spec input transparently.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str  # NFKC-normalized
+    description: str
+    license: Optional[str] = None
+    compatibility: Optional[str] = None
+    metadata: Dict[str, str] = Field(default_factory=dict)
+    allowed_tools: List[str] = Field(default_factory=list, alias="allowed-tools")
+    body: str = ""
+    body_size_bytes: int = 0
+    body_lines: int = 0
+    body_tokens: Optional[int] = None
+    spec_dirs: Dict[str, bool] = Field(default_factory=dict)
+    convention_dirs: Dict[str, bool] = Field(default_factory=dict)
+    extra_dirs: List[str] = Field(default_factory=list)
+    folder_name: str = ""
+    folder_name_nfkc: str = ""
+    frontmatter_raw: Dict[str, Any] = Field(default_factory=dict)
+    git_sha: Optional[str] = None
+    parse_warnings: List[str] = Field(default_factory=list)
+
+
+class Violation(BaseModel):
+    """Single spec-compliance violation produced by `validate_skill`."""
+    rule: str  # AP1, AP2, ..., AP18 (or AP5_LONG warning)
+    severity: Severity
+    field: Optional[str] = None
+    line: Optional[int] = None
+    message: str
+    suggestion: str = ""
+    score_deduction: int = 0  # 0–20
+
+
+class SpecCompliance(BaseModel):
+    """Aggregate compliance result over a single ParsedSkill."""
+    score: int = 100  # 0–100
+    violations: List[Violation] = Field(default_factory=list)
+    passed_hard_fails: bool = True  # False if any HIGH violation
+
+
+class AntiPattern(BaseModel):
+    """One anti-pattern finding produced by `detect_anti_patterns`."""
+    id: str  # AP1..AP18
+    severity: Severity
+    field: Optional[str] = None
+    line: Optional[int] = None
+    regex_match: Optional[str] = None
+    message: str
+    suggestion: str = ""
+
+
+# ── Skill Activation Adapter (QO-053-B) ──────────────────────────────────────
+
+
+class ToolCall(BaseModel):
+    """One tool invocation recorded during an L2/L3 activation turn.
+
+    The activator's MockFileSystem (and, later, the QO-059 Docker harness)
+    record every tool the activated agent attempts to call. Downstream probes
+    in QO-053-D/E inspect this log to detect script poisoning, fee-payer
+    hijack, and other tool-trace anomalies.
+    """
+    tool: str  # Read | Bash | Glob | Grep | Edit | Write
+    args: Dict[str, Any] = Field(default_factory=dict)
+    returned: Optional[str] = None
+    error: Optional[str] = None
+    blocked: bool = False  # True when path-escape / network access denied
+    duration_ms: int = 0
+
+
+class UsageSummary(BaseModel):
+    """Aggregate token + cost summary across an activation session.
+
+    Mirrors the structure consumed by QO-051 CPCR aggregator. ``dollars_spent``
+    is computed at the activator using ``calculate_cost`` so that free-tier
+    runs honestly report ``0.0`` and the shadow-cost path is computed by
+    callers from raw token counts.
+    """
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    dollars_spent: float = 0.0
+    model: str = ""
+    provider: str = ""
+    request_ids: List[str] = Field(default_factory=list)
+    n_calls: int = 0
+
+
+class ActivationResponse(BaseModel):
+    """Single ``respond()`` call return value for any SkillActivatedAgent.
+
+    Mirrors the public contract used by the evaluator dispatch in
+    QO-053-C; ``parse_warnings`` surfaces both bash-preprocessor strips and
+    cache-disabled-below-min-tokens (AC9) so audit can see why the per-call
+    cost spiked.
+    """
+    text: str
+    tool_calls: List[ToolCall] = Field(default_factory=list)
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model: str
+    provider: str = ""
+    request_id: str = ""
+    latency_ms: int = 0
+    parse_warnings: List[str] = Field(default_factory=list)
+
+
+class ActivationFailure(Exception):
+    """Raised when an activation provider exhausts retries.
+
+    Attributes
+    ----------
+    last_request_id:
+        Provider-side request ID from the final attempt — propagated to the
+        DLQ entry so engineers can grep provider logs without replaying the
+        whole eval.
+    provider:
+        ``cerebras`` / ``groq`` / ``anthropic``.
+    attempt_count:
+        Total attempts made (1 + retries).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        last_request_id: str = "",
+        provider: str = "",
+        attempt_count: int = 0,
+    ):
+        super().__init__(message)
+        self.last_request_id = last_request_id
+        self.provider = provider
+        self.attempt_count = attempt_count
+
+
+class ModelVersionRecord(BaseModel):
+    """Persisted (alias, dated_snapshot, resolved_at) row for AQVC reproducibility.
+
+    See AC4. Stored in ``quality__model_versions``; one document per provider
+    (``alias`` is unique per provider so a re-resolve overwrites in place).
+    """
+    provider: str
+    alias: str  # e.g. ``claude-sonnet-4-5`` or ``llama3.1-8b``
+    dated_snapshot: str  # e.g. ``claude-sonnet-4-5-20250929``
+    resolved_at: datetime = Field(default_factory=datetime.utcnow)
+    source: str = "list_models"  # ``list_models`` (Anthropic) or ``fixed`` (Cerebras/Groq)
+
+
+class ActivationDLQEntry(BaseModel):
+    """Dead-letter queue entry written when a call fails permanently (AC8)."""
+    skill_id: Optional[str] = None
+    question_id: Optional[str] = None
+    last_request_id: str = ""
+    provider: str = ""
+    error_class: str = ""
+    error_message: str = ""
+    attempt_count: int = 0
+    ts: datetime = Field(default_factory=datetime.utcnow)
