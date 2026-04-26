@@ -890,3 +890,59 @@ class SkillScore(BaseModel):
     # Did this row come back from the L1 cache (no LLM calls)?
     cached: bool = False
     ts: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ── Marketplace API (QO-053-H) ───────────────────────────────────────────────
+
+
+class MarketplaceListItem(BaseModel):
+    """One row in ``GET /v1/marketplace/{slug}``.
+
+    ``r5_risk_score`` is a derived projection (0-10, higher = riskier) computed
+    server-side from the join of ``quality__skill_scores`` with
+    ``quality__probe_results``. It is never persisted directly on
+    ``quality__skill_scores``; recomputed on each cache miss.
+    """
+    id: str
+    subject_uri: str
+    name: str
+    slug: str
+    category: Optional[str] = None
+    score: int = 0
+    tier: str = "failed"
+    last_eval_at: Optional[datetime] = None
+    axes: Dict[str, float] = Field(default_factory=dict)
+    delta_vs_baseline: Optional[float] = None
+    activation_provider: str = "cerebras:llama3.1-8b"
+    r5_risk_score: float = 0.0
+
+
+class MarketplaceListResponse(BaseModel):
+    slug: str
+    items: List[MarketplaceListItem] = Field(default_factory=list)
+    total: int = 0
+    avg_score: int = 0
+    top_risks: List[str] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MarketplaceSkillDetail(BaseModel):
+    """Per-skill detail payload — last snapshot only (multi-snapshot → H2)."""
+    id: str
+    subject_uri: str
+    name: str
+    slug: str
+    category: Optional[str] = None
+    score: int = 0
+    tier: str = "failed"
+    last_eval_at: Optional[datetime] = None
+    axes: Dict[str, float] = Field(default_factory=dict)
+    na_axes: List[str] = Field(default_factory=list)
+    delta_vs_baseline: Optional[float] = None
+    baseline_score: Optional[float] = None
+    activation_provider: str = "cerebras:llama3.1-8b"
+    r5_risk_score: float = 0.0
+    github_url: Optional[str] = None
+    owner: Optional[str] = None
+    probe_results: List[Dict[str, Any]] = Field(default_factory=list)
+    last_snapshot_at: Optional[datetime] = None

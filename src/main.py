@@ -30,6 +30,7 @@ from src.api.v1.onchain import router as onchain_router
 from src.api.v1.report import router as report_router
 from src.api.v1.operators import router as operators_router
 from src.api.v1.auth import router as auth_router
+from src.api.v1.marketplace import router as marketplace_router
 from src.api.agent_card import router as agent_card_router
 from src.storage.mongodb import connect_db, close_db
 from src.storage.cache import connect_redis, close_redis
@@ -114,6 +115,7 @@ app.include_router(onchain_router, prefix="/v1", tags=["onchain"])
 app.include_router(report_router, prefix="/v1", tags=["report"])
 app.include_router(operators_router, prefix="/v1", tags=["operators"])
 app.include_router(auth_router, prefix="/v1", tags=["auth"])
+app.include_router(marketplace_router, prefix="/v1", tags=["marketplace"])
 app.include_router(agent_card_router, tags=["a2a"])
 
 
