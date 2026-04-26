@@ -210,6 +210,22 @@ class EvaluateRequest(BaseModel):
     erc8004_agent_id: Optional[int] = None  # ERC-8004 agent token ID for on-chain reputation
 
 
+class SubmitSkillRequest(BaseModel):
+    """QO-060: skill bundle uploaded via drag-drop or GitHub URL.
+
+    Frontend posts an in-memory SKILL.md bundle (frontmatter + body + provenance)
+    instead of a URL. Backend materializes to a temp dir and dispatches through
+    the standard evaluate_skill() pipeline.
+    """
+    frontmatter: Dict[str, Any]
+    body: str
+    source: str = "drag"  # "drag" | "github"
+    filename: Optional[str] = None
+    level: EvalLevel = EvalLevel.MANIFEST
+    eval_mode: EvalMode = EvalMode.VERIFIED
+    webhook_url: Optional[str] = None
+
+
 # Response models
 class EvaluateResponse(BaseModel):
     evaluation_id: str
