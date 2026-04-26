@@ -82,6 +82,15 @@ async def connect_db():
     await _db.quality__operator_registration_attempts.create_index("github_user_id")
     await _db.quality__operator_registration_attempts.create_index("rejected_at")
     await _db.quality__operator_registration_attempts.create_index("reason")
+    # Skill scores (QO-053-F) — eval_hash is unique so the cache + replay
+    # contract holds; the (skill_repo, skill_name, git_sha) compound index
+    # supports "what's the score on this exact skill commit?" queries.
+    await _db.quality__skill_scores.create_index(
+        [("skill_repo", 1), ("skill_name", 1), ("git_sha", 1)]
+    )
+    await _db.quality__skill_scores.create_index("eval_hash", unique=True)
+    await _db.quality__skill_scores.create_index([("evaluated_at", -1)])
+    await _db.quality__skill_scores.create_index("tier")
     logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
 
@@ -199,3 +208,29 @@ def probe_executions_col():
 # GitHub OAuth (QO-046)
 def operator_registration_attempts_col():
     return get_db().quality__operator_registration_attempts
+
+
+# Skill scores (QO-053-F)
+def skill_scores_col():
+    """Persisted ``SkillScore`` rows — one per (skill, eval_hash) pair.
+
+    Indexes (created in :func:`connect_db`):
+
+    * ``(skill_repo, skill_name, git_sha)`` — score-by-skill-commit lookup.
+    * ``eval_hash`` UNIQUE — replay contract; idempotency key.
+    * ``evaluated_at DESC`` — recent-runs page.
+    * ``tier`` — leaderboard filtering by gold/silver/bronze.
+    """
+    return get_db().quality__skill_scores
+
+
+def audit_blobs_fs():
+    """GridFS bucket for gzipped audit blobs (QO-053-F).
+
+    Stores the full SKILL.md, all judge prompts, all judge votes, and all
+    probe results for one evaluation. ``SkillScore.audit_blob_id`` is the
+    ``_id`` of the GridFS file. Migrated to S3 in a future spec — kept
+    behind this accessor so that move is a one-file change.
+    """
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+    return AsyncIOMotorGridFSBucket(get_db(), bucket_name="quality__audit_blobs")

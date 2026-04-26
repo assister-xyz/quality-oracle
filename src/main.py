@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import settings
 from src.api.v1.health import router as health_router
+from src.api.v1.discover import router as discover_router
 from src.api.v1.evaluate import router as evaluate_router
 from src.api.v1.scores import router as scores_router
 from src.api.v1.badges import router as badges_router
@@ -18,6 +19,7 @@ from src.api.v1.battles import router as battles_router
 from src.api.v1.arena import router as arena_router
 from src.api.v1.rankings import router as rankings_router
 from src.api.v1.aiuc1 import router as aiuc1_router
+from src.api.v1.aiuc import router as aiuc_router
 from src.api.v1.irt import router as irt_router
 from src.api.v1.costs import router as costs_router
 from src.api.v1.scan import router as scan_router
@@ -91,6 +93,7 @@ app.add_middleware(
 # API routes
 app.include_router(health_router, tags=["health"])
 app.include_router(evaluate_router, prefix="/v1", tags=["evaluation"])
+app.include_router(discover_router, prefix="/v1", tags=["discovery"])
 app.include_router(scores_router, prefix="/v1", tags=["scores"])
 app.include_router(badges_router, prefix="/v1", tags=["badges"])
 app.include_router(attestations_router, prefix="/v1", tags=["attestations"])
@@ -101,6 +104,7 @@ app.include_router(battles_router, prefix="/v1", tags=["battles"])
 app.include_router(arena_router, prefix="/v1", tags=["arena"])
 app.include_router(rankings_router, prefix="/v1", tags=["rankings"])
 app.include_router(aiuc1_router, prefix="/v1", tags=["aiuc1"])
+app.include_router(aiuc_router, prefix="/v1", tags=["aiuc"])
 app.include_router(irt_router, prefix="/v1", tags=["irt"])
 app.include_router(costs_router, prefix="/v1", tags=["costs"])
 app.include_router(scan_router, prefix="/v1", tags=["scan"])

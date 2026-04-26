@@ -12,6 +12,8 @@ import statistics
 import time
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from src.core.paraphraser import QuestionParaphraser
 from src.core.difficulty_calibration import DifficultyTracker
 from src.core.scoring import apply_style_adjustment
@@ -20,6 +22,7 @@ from src.core.question_pools import (
     ALL_QUESTIONS,
     determine_tier,
 )
+from src.storage.models import TargetType
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,79 @@ EARLY_EXIT_LOW_THRESHOLD = 30   # All scores below this → negative exit
 EARLY_EXIT_MIN_LOW = 3          # Minimum low scores before negative exit
 
 
+# ── QO-053-C: skill tier gate + helper ──────────────────────────────────────
+
+
+async def _maybe_await(value):
+    """Await ``value`` if it's a coroutine; otherwise return it unchanged.
+
+    Lets callers pass either an instance or a factory that produces one.
+    Used by ``Evaluator.evaluate_skill`` so tests can supply a sync factory.
+    """
+    import inspect
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def compute_skill_tier(
+    absolute: float,
+    delta: Optional[float],
+    level,
+    baseline_status: str = "ok",
+    has_high_probe_fail: bool = False,
+) -> str:
+    """Compute the public-tier name for a skill evaluation.
+
+    R7 §9 + AC5 + AC10 + QO-053-E AC9:
+
+    * ``MANIFEST`` (L1)        → ``verified`` if absolute ≥ 50, else ``failed``.
+    * ``FUNCTIONAL`` (L2)      → requires ``delta ≥ 10`` AND ``absolute ≥ 65``
+                                  for a certified-tier badge. If
+                                  ``baseline_status == 'failed'``, cap at
+                                  ``verified`` (no measured uplift).
+                                  Above the threshold:
+                                  ``bronze`` (<75) / ``silver`` (<85) / ``gold``.
+    * ``DOMAIN_EXPERT`` (L3)   → QO-053-E AC9 — if ANY probe with severity
+                                  HIGH returns FAIL, cap at ``silver``
+                                  regardless of axis scores. Otherwise the
+                                  L2 ladder applies.
+
+    Always returns a lowercase string.
+    """
+    from src.storage.models import EvalLevel as _EvalLevel
+    if level == _EvalLevel.MANIFEST:
+        return "verified" if absolute >= 50 else "failed"
+
+    if level == _EvalLevel.FUNCTIONAL:
+        if baseline_status == "failed":
+            return "verified"
+        if delta is None or delta < 10 or absolute < 65:
+            return "verified"
+        if absolute < 75:
+            return "bronze"
+        if absolute < 85:
+            return "silver"
+        return "gold"
+
+    # DOMAIN_EXPERT — QO-053-E AC9 layers a probe-gate on top of the L2 ladder.
+    if baseline_status == "failed":
+        return "verified"
+    if delta is None or delta < 10 or absolute < 65:
+        return "verified"
+    if absolute < 75:
+        return "bronze"
+    if absolute < 85:
+        return "silver"
+    # AC9: at L3, a HIGH-severity probe FAIL prevents earning gold; cap at
+    # silver — never deny down to bronze when absolute already merits gold,
+    # so the tier remains monotone in absolute score for builders who fix
+    # the HIGH and re-submit.
+    if has_high_probe_fail:
+        return "silver"
+    return "gold"
+
+
 class ManifestValidationResult:
     """Result of Level 1 manifest validation."""
     def __init__(self):
@@ -62,61 +138,89 @@ class ManifestValidationResult:
         }
 
 
-class EvaluationResult:
-    """Result of a complete evaluation."""
-    def __init__(self):
-        self.overall_score: int = 0
-        self.tier: str = "failed"
-        self.confidence: float = 0.0
-        self.tool_scores: Dict[str, dict] = {}
-        self.domain_scores: Dict[str, dict] = {}
-        self.questions_asked: int = 0
-        self.questions_answered: int = 0
-        self.judge_responses: List[dict] = []
-        self.manifest_result: Optional[ManifestValidationResult] = None
-        self.duration_ms: int = 0
-        self.result_hash: str = ""
+class EvaluationResult(BaseModel):
+    """Result of a complete evaluation.
 
-        # Multi-dimensional scoring (6 axes)
-        self.dimensions: Optional[Dict[str, dict]] = None
-        self.safety_report: Optional[dict] = None
-        self.process_quality_report: Optional[dict] = None
-        self.latency_stats: Optional[Dict[str, int]] = None
+    QO-053-C (CB7): converted from plain class to Pydantic BaseModel so that
+    migration scripts can validate, MongoDB persistence picks up serialization
+    hooks, and downstream consumers in api/v1/evaluate.py:484-637 keep
+    attribute access (no code changes there). AC9 enforces byte-identical
+    persistence on 5 fixture MCP evaluations.
 
-        # Style control
-        self.style_report: Optional[dict] = None
+    The plain attribute mutation pattern from the legacy class is preserved
+    via ``model_config["validate_assignment"] = False`` and explicit defaults
+    on every field — direct ``result.foo = bar`` continues to work.
+    """
 
-        # Anti-gaming signals
-        self.gaming_risk: Optional[dict] = None
+    # Allow ManifestValidationResult (plain class) and similar non-Pydantic
+    # types to pass through without strict validation. Pydantic's default
+    # ``arbitrary_types_allowed`` is False; we flip it on so manifest_result
+    # and other dict-typed fields drop in unchanged.
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
-        # IRT ability estimation
-        self.irt_theta: Optional[float] = None
-        self.irt_se: Optional[float] = None
-        self.confidence_interval: Optional[Dict[str, float]] = None
+    overall_score: int = 0
+    tier: str = "failed"
+    confidence: float = 0.0
+    tool_scores: Dict[str, dict] = Field(default_factory=dict)
+    domain_scores: Dict[str, dict] = Field(default_factory=dict)
+    questions_asked: int = 0
+    questions_answered: int = 0
+    judge_responses: List[dict] = Field(default_factory=list)
+    manifest_result: Optional[ManifestValidationResult] = None
+    duration_ms: int = 0
+    result_hash: str = ""
 
-        # Token usage tracking
-        self.token_usage: Optional[Dict[str, Any]] = None
-        self.cost_usd: Optional[float] = None
-        # Shadow cost = market-rate cost (paid API equivalent). Kept as a
-        # first-class field so CPCR computation does not depend on the nested
-        # token_usage dict.
-        self.shadow_cost_usd: Optional[float] = None
+    # Multi-dimensional scoring (6 axes)
+    dimensions: Optional[Dict[str, dict]] = None
+    safety_report: Optional[dict] = None
+    process_quality_report: Optional[dict] = None
+    latency_stats: Optional[Dict[str, int]] = None
 
-        # QO-051: Cost per Correct Response (3 variants — binary, weighted,
-        # shadow). Populated by _compute_cpcr() once judge_responses and
-        # cost data are available. All fields nullable → null propagates when
-        # evaluation produced 0 correct responses.
-        self.correct_count: int = 0
-        self.cpcr: Optional[float] = None
-        self.weighted_cpcr: Optional[float] = None
-        self.shadow_cpcr: Optional[float] = None
+    # Style control
+    style_report: Optional[dict] = None
 
-        # QO-054: input quality — fraction of tool calls that did NOT error.
-        # A score from a run with low input_quality_rate is not a reliable
-        # signal about agent capability; it says more about our test inputs.
-        self.input_quality_rate: Optional[float] = None
-        self.total_tool_calls: int = 0
-        self.errored_tool_calls: int = 0
+    # Anti-gaming signals
+    gaming_risk: Optional[dict] = None
+
+    # IRT ability estimation
+    irt_theta: Optional[float] = None
+    irt_se: Optional[float] = None
+    confidence_interval: Optional[Dict[str, float]] = None
+
+    # Token usage tracking
+    token_usage: Optional[Dict[str, Any]] = None
+    cost_usd: Optional[float] = None
+    # Shadow cost = market-rate cost (paid API equivalent). Kept as a
+    # first-class field so CPCR computation does not depend on the nested
+    # token_usage dict.
+    shadow_cost_usd: Optional[float] = None
+
+    # QO-051: Cost per Correct Response (3 variants — binary, weighted,
+    # shadow). Populated by _compute_cpcr() once judge_responses and
+    # cost data are available. All fields nullable → null propagates when
+    # evaluation produced 0 correct responses.
+    correct_count: int = 0
+    cpcr: Optional[float] = None
+    weighted_cpcr: Optional[float] = None
+    shadow_cpcr: Optional[float] = None
+
+    # QO-054: input quality — fraction of tool calls that did NOT error.
+    # A score from a run with low input_quality_rate is not a reliable
+    # signal about agent capability; it says more about our test inputs.
+    input_quality_rate: Optional[float] = None
+    total_tool_calls: int = 0
+    errored_tool_calls: int = 0
+
+    # ── QO-053-C (CB7): differential + per-target dispatch fields ───────────
+    # All nullable so existing MCP evaluations remain byte-identical (AC9):
+    # to_dict() only emits these when explicitly set by evaluate_skill().
+    delta_vs_baseline: Optional[float] = None
+    baseline_score: Optional[float] = None
+    baseline_status: Optional[str] = None  # "ok" | "failed" | None
+    axis_weights_used: Optional[Dict[str, float]] = None
+    target_type_dispatched: Optional[TargetType] = None
+    subject_uri: Optional[str] = None
+    spec_compliance: Optional[Dict[str, Any]] = None  # serialised SpecCompliance for skills
 
     def compute_cpcr(self, correct_threshold: int = 70) -> Dict[str, Any]:
         """Compute the three CPCR variants from judge_responses + cost data.
@@ -156,7 +260,7 @@ class EvaluationResult:
         }
 
     def to_dict(self) -> dict:
-        d = {
+        d: Dict[str, Any] = {
             "overall_score": self.overall_score,
             "tier": self.tier,
             "confidence": self.confidence,
@@ -207,6 +311,22 @@ class EvaluationResult:
                 "weighted_cpcr": self.weighted_cpcr,
                 "shadow_cpcr": self.shadow_cpcr,
             }
+        # ── QO-053-C: emit new fields ONLY when set, to preserve AC9
+        #    byte-identical regression on legacy MCP evaluations.
+        if self.delta_vs_baseline is not None:
+            d["delta_vs_baseline"] = self.delta_vs_baseline
+        if self.baseline_score is not None:
+            d["baseline_score"] = self.baseline_score
+        if self.baseline_status is not None:
+            d["baseline_status"] = self.baseline_status
+        if self.axis_weights_used is not None:
+            d["axis_weights_used"] = self.axis_weights_used
+        if self.target_type_dispatched is not None:
+            d["target_type_dispatched"] = self.target_type_dispatched.value
+        if self.subject_uri is not None:
+            d["subject_uri"] = self.subject_uri
+        if self.spec_compliance is not None:
+            d["spec_compliance"] = self.spec_compliance
         return d
 
 
@@ -1087,4 +1207,242 @@ class Evaluator:
             f"Cost: ${token_data.get('cost_usd', 0):.6f}"
         )
 
+        return result
+
+    # ── QO-053-C: dispatch surface ──────────────────────────────────────────
+
+    async def evaluate_mcp(
+        self,
+        target_id: str,
+        server_url: str,
+        tool_responses: Dict[str, List[dict]],
+        manifest: Optional[dict] = None,
+        run_safety: bool = True,
+        run_consistency: bool = True,
+        progress_cb: Optional[Any] = None,
+        detected_domain: str = "general",
+    ) -> EvaluationResult:
+        """Thin façade over :meth:`evaluate_full` for MCP_SERVER targets.
+
+        Exists so that ``api.v1.evaluate._run_evaluation`` has a symmetric
+        dispatch surface (``evaluate_mcp`` vs. ``evaluate_skill``). The
+        behaviour is intentionally identical to ``evaluate_full`` — AC2
+        regression tests pin the persisted output to be byte-identical.
+        """
+        return await self.evaluate_full(
+            target_id=target_id,
+            server_url=server_url,
+            tool_responses=tool_responses,
+            manifest=manifest,
+            run_safety=run_safety,
+            run_consistency=run_consistency,
+            progress_cb=progress_cb,
+            detected_domain=detected_domain,
+        )
+
+    async def evaluate_skill(
+        self,
+        target,
+        level,
+        *,
+        activator_factory=None,
+        baseline_activator_factory=None,
+        ajudge_rubric=None,
+    ) -> EvaluationResult:
+        """Skill evaluation with optional differential baseline (AC4 + AC10).
+
+        Parameters
+        ----------
+        target:
+            A duck-typed skill target. The dispatcher in
+            ``api.v1.evaluate._run_evaluation`` constructs this — this method
+            only requires three attributes:
+
+            * ``parsed: ParsedSkill``
+            * ``spec_compliance: SpecCompliance`` (already computed)
+            * ``subject_uri: str``
+        level:
+            ``EvalLevel`` — controls quota and whether the differential
+            baseline path runs (FUNCTIONAL or higher).
+        activator_factory:
+            ``async () -> SkillActivatedAgent`` — produces the **activated**
+            agent (skill loaded). Injected so tests don't need a live LLM.
+        baseline_activator_factory:
+            ``async () -> SkillActivatedAgent`` — produces the **baseline**
+            agent (skill=None, same model/temperature). Required when
+            ``level >= FUNCTIONAL``; tests at MANIFEST may pass ``None``.
+        ajudge_rubric:
+            Awaitable ``(question_text, response_text, rubric) -> int`` —
+            scores 0-100. Defaults to ``self.llm_judge.ajudge`` adapted to a
+            rubric prompt. Injected so tests can pin scores.
+
+        Returns
+        -------
+        EvaluationResult
+            Populated with ``overall_score`` (activated absolute score),
+            ``baseline_score`` / ``delta_vs_baseline`` (if differential ran),
+            ``baseline_status`` (``"ok"`` | ``"failed"`` | ``"skipped"``),
+            ``axis_weights_used`` = SKILL_WEIGHTS, ``target_type_dispatched``
+            = ``TargetType.SKILL``, ``subject_uri``, ``spec_compliance``,
+            and the tier computed by :func:`compute_skill_tier`.
+        """
+        from src.core.axis_weights import SKILL_WEIGHTS
+        from src.core.question_pack_selector import select_question_pack
+        from src.storage.models import EvalLevel as _EvalLevel, TargetType as _TargetType
+
+        start = time.time()
+        result = EvaluationResult()
+        result.target_type_dispatched = _TargetType.SKILL
+        result.axis_weights_used = dict(SKILL_WEIGHTS)
+        result.subject_uri = getattr(target, "subject_uri", "")
+
+        parsed = getattr(target, "parsed", None)
+        spec_compliance = getattr(target, "spec_compliance", None)
+        if parsed is None:
+            raise ValueError("evaluate_skill: target.parsed (ParsedSkill) is required")
+
+        if spec_compliance is not None:
+            try:
+                result.spec_compliance = (
+                    spec_compliance.model_dump()
+                    if hasattr(spec_compliance, "model_dump")
+                    else dict(spec_compliance)
+                )
+            except Exception:  # pragma: no cover - defensive
+                result.spec_compliance = {"score": getattr(spec_compliance, "score", 0)}
+
+        questions = select_question_pack(parsed, level)
+        result.questions_asked = len(questions)
+
+        # Default rubric judge: re-uses the configured llm_judge; tests inject
+        # a deterministic stub via ``ajudge_rubric=...``.
+        async def _default_rubric_judge(q_text: str, response: str, rubric: str) -> int:
+            try:
+                jr = await self.llm_judge.ajudge(q_text, rubric or "", response)
+                return int(getattr(jr, "score", 0))
+            except Exception as exc:  # pragma: no cover - judge robustness covered elsewhere
+                logger.warning("rubric judge failure (non-fatal): %s", exc)
+                return 0
+
+        if ajudge_rubric is None:
+            ajudge_rubric = _default_rubric_judge
+
+        # Activated run
+        activated_scores: List[int] = []
+        if activator_factory is not None:
+            activated_agent = await _maybe_await(activator_factory())
+            for q in questions:
+                try:
+                    resp = await activated_agent.respond(q.text)
+                    text = getattr(resp, "text", "")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("activator call failed: %s", exc)
+                    text = ""
+                score = await ajudge_rubric(q.text, text, q.rubric)
+                activated_scores.append(int(score))
+                result.judge_responses.append(
+                    {
+                        "question_id": q.id,
+                        "question": q.text,
+                        "score": int(score),
+                        "domain": q.domain,
+                        "phase": "activated",
+                    }
+                )
+        else:
+            # No activator → activated_scores stays empty, score stays 0.
+            logger.info("evaluate_skill: no activator_factory provided; activated_scores empty")
+
+        absolute = int(sum(activated_scores) / len(activated_scores)) if activated_scores else 0
+        result.overall_score = absolute
+        result.questions_answered = sum(1 for s in activated_scores if s > 0)
+
+        # Differential baseline — only L2+ (FUNCTIONAL or DOMAIN_EXPERT).
+        # AC10: any persistent failure of the baseline run flips status to
+        # 'failed' so the tier gate caps at 'verified'. We accumulate
+        # per-question failures and raise if EVERY question failed (the
+        # activator is dead) — partial failures still produce a baseline
+        # score so the differential is honest about partial signal. The
+        # outer try/except also catches exceptions raised by the factory
+        # itself, retry-exhausted ActivationFailures, etc.
+        baseline_status: str = "skipped"
+        if level >= _EvalLevel.FUNCTIONAL and baseline_activator_factory is not None:
+            try:
+                baseline_agent = await _maybe_await(baseline_activator_factory())
+                baseline_scores: List[int] = []
+                baseline_failures = 0
+                for q in questions:
+                    try:
+                        resp = await baseline_agent.respond(q.text)
+                        text = getattr(resp, "text", "")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("baseline activator call failed: %s", exc)
+                        baseline_failures += 1
+                        continue  # don't add a 0 — that would fake a measurement
+                    score = await ajudge_rubric(q.text, text, q.rubric)
+                    baseline_scores.append(int(score))
+                    result.judge_responses.append(
+                        {
+                            "question_id": q.id,
+                            "question": q.text,
+                            "score": int(score),
+                            "domain": q.domain,
+                            "phase": "baseline",
+                        }
+                    )
+                # If every baseline call failed, flag the run as failed.
+                if questions and baseline_failures == len(questions):
+                    raise RuntimeError(
+                        f"baseline activator failed on all {len(questions)} questions"
+                    )
+                if baseline_scores:
+                    result.baseline_score = float(sum(baseline_scores) / len(baseline_scores))
+                    result.delta_vs_baseline = float(absolute) - result.baseline_score
+                baseline_status = "ok"
+            except Exception as exc:  # AC10
+                logger.warning(
+                    "baseline_run_failed for skill=%s: %s",
+                    getattr(parsed, "name", "?"), exc,
+                )
+                result.baseline_score = None
+                result.delta_vs_baseline = None
+                baseline_status = "failed"
+        result.baseline_status = baseline_status
+
+        # Tier gate (R7 §9 + AC5 + AC10).
+        result.tier = compute_skill_tier(
+            absolute=absolute,
+            delta=result.delta_vs_baseline,
+            level=level,
+            baseline_status=baseline_status,
+        )
+
+        # Confidence — sample size + spec compliance modulator.
+        sample_conf = min(0.95, len(activated_scores) / 30) if activated_scores else 0.0
+        result.confidence = round(sample_conf, 2)
+
+        result.duration_ms = int((time.time() - start) * 1000)
+        hash_data = f"{result.subject_uri or 'skill'}:{result.overall_score}:{result.questions_asked}:{int(time.time())}"
+        result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
+
+        # Token usage best-effort — judges contribute via collect_token_usage();
+        # activator usage is reported via target.activator.usage_summary() at
+        # the call site (api/v1/evaluate.py merges the two when persisting).
+        try:
+            token_data = self.collect_token_usage()
+            result.token_usage = token_data
+            result.cost_usd = token_data.get("cost_usd", 0.0)
+            result.shadow_cost_usd = token_data.get("shadow_cost_usd", 0.0)
+            _maybe_compute_cpcr(result)
+        except Exception:  # pragma: no cover - token bookkeeping is non-fatal
+            pass
+
+        logger.info(
+            "Skill evaluation: skill=%s level=%s absolute=%d baseline=%s delta=%s tier=%s",
+            getattr(parsed, "name", "?"), level.name,
+            absolute,
+            result.baseline_score,
+            result.delta_vs_baseline,
+            result.tier,
+        )
         return result

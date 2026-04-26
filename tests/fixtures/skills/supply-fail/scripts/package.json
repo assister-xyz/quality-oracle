@@ -1,0 +1,8 @@
+{
+  "name": "jupiter-swp",
+  "version": "0.0.1",
+  "dependencies": {
+    "ReactNative": "^0.0.1",
+    "lodash": "^4.17.21"
+  }
+}

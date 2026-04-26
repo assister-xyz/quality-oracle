@@ -1,0 +1,74 @@
+name: build-l3-image
+
+# QO-059: rebuild L3 harness images when Renovate-bot bumps claude-agent-sdk
+# (Python pin in requirements.txt) or @anthropic-ai/claude-code (npm pin in
+# images/laureum-claude-code-runner/package.json).
+#
+# The push step is intentionally commented out — registry credentials aren't
+# configured yet. Re-enable once GHCR auth is wired in repo secrets.
+#
+# On rebuild, the rollback runbook (QO-059 spec §"Image-bump rollback runbook")
+# requires the 5-fixture Spearman-ρ check to pass before the new SHA replaces
+# settings.laureum_l3_docker_image_sha. That fixture suite is owned by
+# tests/test_l3_live.py and runs separately via the live marker.
+
+on:
+  pull_request:
+    paths:
+      - "requirements.txt"
+      - "images/laureum-claude-code-runner/package.json"
+      - "images/laureum-claude-code-runner/Dockerfile"
+      - "images/laureum-proxy/Dockerfile"
+      - "images/laureum-proxy/squid.conf"
+
+jobs:
+  build:
+    # Only rebuild on Renovate / Dependabot bumps to avoid burning CI on every PR.
+    if: >
+      github.actor == 'renovate[bot]' ||
+      github.actor == 'dependabot[bot]' ||
+      contains(github.event.pull_request.labels.*.name, 'l3-image-rebuild')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # GHCR login is intentionally commented out until secrets are wired.
+      # - name: Log in to GHCR
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build laureum-proxy
+        uses: docker/build-push-action@v5
+        with:
+          context: images/laureum-proxy
+          tags: |
+            ghcr.io/${{ github.repository }}/laureum-proxy:pr-${{ github.event.pull_request.number }}
+          push: false   # TODO(QO-059): set true once GHCR creds are configured
+
+      - name: Build laureum-claude-code-runner
+        uses: docker/build-push-action@v5
+        with:
+          context: images/laureum-claude-code-runner
+          tags: |
+            ghcr.io/${{ github.repository }}/laureum-claude-code-runner:pr-${{ github.event.pull_request.number }}
+          push: false   # TODO(QO-059): set true once GHCR creds are configured
+
+      - name: Comment SHA on PR
+        # Surface the built image SHAs to the PR body so the rollback runbook
+        # can reference them. Real push to GHCR comes once creds are wired.
+        run: |
+          echo "Image build summary:"
+          echo "  laureum-proxy: built but not pushed"
+          echo "  laureum-claude-code-runner: built but not pushed"
+          echo ""
+          echo "TODO: enable push to GHCR; then update LAUREUM_L3_DOCKER_IMAGE_SHA"
+          echo "      in src/config.py via PR after Spearman-ρ check passes."
