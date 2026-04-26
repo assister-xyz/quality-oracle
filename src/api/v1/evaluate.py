@@ -14,6 +14,8 @@ from src.storage.models import (
     EvaluationStatus,
     EvalStatus,
     EvalLevel,
+    SubmitSkillRequest,
+    TargetType,
     WebhookPayload,
     normalize_eval_mode,
 )
@@ -203,6 +205,112 @@ async def submit_evaluation(
         estimated_time_seconds=estimated.get(request.level, 60),
         poll_url=f"/v1/evaluate/{evaluation_id}",
         message=message,
+    )
+
+
+@router.post("/evaluate/skill", response_model=EvaluateResponse)
+async def submit_skill_evaluation(
+    request: SubmitSkillRequest,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    http_request: Request,
+    api_key_doc: dict = Depends(get_api_key),
+):
+    """QO-060 / E2E_TEST_REPORT fix: accept a SKILL.md bundle in-memory.
+
+    Frontend posts ``{frontmatter, body, source, filename?, level?, eval_mode?}``
+    instead of a URL. This route materialises the bundle to a temp directory
+    and dispatches through the standard ``_run_evaluation_skill`` background
+    task, which expects ``request.target_url`` to be a local skill directory
+    path.
+    """
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    tier = api_key_doc.get("tier", "free")
+    key_hash = api_key_doc["_id"]
+
+    if not is_eval_level_allowed(tier, request.level.value):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Evaluation level {request.level.value} not available for '{tier}' tier",
+        )
+
+    allowed, remaining, limit = await check_eval_rate_limit(key_hash, tier)
+    add_rate_limit_headers(response, tier, limit, remaining)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Monthly evaluation limit exceeded. Upgrade your tier.",
+        )
+
+    skill_name = request.frontmatter.get("name") or (
+        Path(request.filename).stem if request.filename else "uploaded-skill"
+    )
+
+    evaluation_id = str(uuid4())
+    skill_dir = Path(tempfile.gettempdir()) / "laureum-skill-uploads" / evaluation_id / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        f"---\n{yaml.safe_dump(request.frontmatter, sort_keys=False).strip()}\n---\n\n{request.body}\n",
+        encoding="utf-8",
+    )
+
+    target_id = f"urn:laureum:skill:{evaluation_id}"
+
+    caller_api_key_hash = key_hash[:16] if key_hash else ""
+    caller_org = api_key_doc.get("owner_email", "")
+    caller_user_agent = http_request.headers.get("user-agent", "")[:200]
+    client_ip = http_request.client.host if http_request.client else ""
+    caller_ip_hash = hashlib.sha256(client_ip.encode()).hexdigest()[:16] if client_ip else ""
+
+    doc = {
+        "_id": evaluation_id,
+        "target_id": target_id,
+        "target_type": TargetType.SKILL.value,
+        "target_url": str(skill_dir),
+        "status": EvalStatus.PENDING.value,
+        "level": request.level.value,
+        "domains": [],
+        "connection_strategy": "skill_bundle",
+        "evaluation_version": EVALUATION_VERSION,
+        "eval_mode": request.eval_mode.value,
+        "webhook_url": request.webhook_url,
+        "callback_secret": None,
+        "payment": None,
+        "created_at": datetime.utcnow(),
+        "skill_source": request.source,
+        "skill_filename": request.filename,
+        "skill_name_declared": skill_name,
+        "caller_api_key_hash": caller_api_key_hash,
+        "caller_tier": tier,
+        "caller_org": caller_org,
+        "caller_user_agent": caller_user_agent,
+        "caller_ip_hash": caller_ip_hash,
+        "request_received_at": datetime.utcnow(),
+    }
+    await evaluations_col().insert_one(doc)
+
+    eval_request = EvaluateRequest(
+        target_url=str(skill_dir),
+        target_type=TargetType.SKILL,
+        level=request.level,
+        eval_mode=request.eval_mode,
+        webhook_url=request.webhook_url,
+    )
+
+    background_tasks.add_task(_run_evaluation, evaluation_id, eval_request)
+
+    estimated = {EvalLevel.MANIFEST: 5, EvalLevel.FUNCTIONAL: 60, EvalLevel.DOMAIN_EXPERT: 180}
+    return EvaluateResponse(
+        evaluation_id=evaluation_id,
+        status=EvalStatus.PENDING,
+        estimated_time_seconds=estimated.get(request.level, 60),
+        poll_url=f"/v1/evaluate/{evaluation_id}",
+        message="Skill bundle materialised; evaluation dispatched.",
     )
 
 

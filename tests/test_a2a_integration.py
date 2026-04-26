@@ -64,7 +64,7 @@ class TestDIDDocument:
     def test_structure(self):
         key = Ed25519PrivateKey.generate()
         did_doc = build_did_document(key.public_key())
-        assert did_doc["id"] == "did:web:agenttrust.assisterr.ai"
+        assert did_doc["id"] == "did:web:laureum.ai"
         assert "@context" in did_doc
         assert len(did_doc["verificationMethod"]) == 1
         vm = did_doc["verificationMethod"][0]
@@ -154,7 +154,7 @@ class TestVCIssuanceVerification:
         vc = create_vc(self._make_aqvc(), key)
 
         assert vc["type"] == ["VerifiableCredential", "AgentQualityCredential"]
-        assert vc["issuer"] == "did:web:agenttrust.assisterr.ai"
+        assert vc["issuer"] == "did:web:laureum.ai"
         assert vc["proof"]["cryptosuite"] == "eddsa-jcs-2022"
         assert vc["proof"]["proofValue"].startswith("z")
 
