@@ -300,7 +300,7 @@ Developer improves agent
 
 1. **Auto-generated battle cards** — SVG/PNG showing Agent A vs B, scores, winner. One-click share to X
 2. **Dynamic OG images** — When someone shares a battle URL, the preview shows a rich result card
-3. **README badges** — `![AgentTrust](https://agenttrust.assisterr.ai/v1/badge/srv_123.svg?style=battle&record=12-3)`
+3. **README badges** — `![Laureum](https://laureum.ai/v1/badge/srv_123.svg?style=battle&record=12-3)`
 4. **Thread-ready format** — Battle results formatted for X threads (challenge → response A → response B → verdict)
 5. **Meme-worthy stats** — "23% of MCP servers fail basic prompt injection" → viral on tech Twitter
 

@@ -802,4 +802,3 @@ class ActivationDLQEntry(BaseModel):
     error_class: str = ""
     error_message: str = ""
     attempt_count: int = 0
-    ts: datetime = Field(default_factory=datetime.utcnow)
