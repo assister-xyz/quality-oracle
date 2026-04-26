@@ -5,25 +5,63 @@ Runs 2-3 diverse LLM judges in parallel, aggregates via median/agreement.
 Dramatically reduces single-judge bias (66% → 85% human agreement).
 
 Cost optimizations (Trust or Escalate pattern, ICLR 2025):
-- Single-judge early exit for decisive scores (>= 90 or <= 15)
-- Tighter agreement threshold for 2-judge consensus
-- Fuzzy-first routing for simple test types (error_handling, boundary, type_coercion)
+- Cascade-gate early exit for decisive scores (>= 85 or <= 20) WITH cross-family
+  confirmation (QO-061) — primary judge alone is no longer enough; a confirmer
+  from a DIFFERENT model family must agree within 10 points or the eval falls
+  through to full 3-judge consensus.
+- Tighter agreement threshold for 2-judge consensus.
+- Fuzzy-first routing for simple test types (error_handling, boundary, type_coercion).
 
-Fallback: if fewer than min_judges respond, use best available result.
+Family-diverse panel (QO-061):
+The free-tier panel uses three distinct model families — Cerebras-Llama (meta_llama),
+Gemini Flash (google_gemini), Qwen 80B (alibaba_qwen) — to defeat the same-family
+self-preference bug found in the previous Cerebras-Llama + Groq-Llama + Qwen panel.
+
+Fallback: if fewer than min_judges respond, use best available result. If the
+panel cannot supply two distinct families (Gemini quota exhausted, Mistral/Qwen
+also unavailable, only Cerebras-Llama left), `InsufficientPanelDiversity` is raised.
 """
 import logging
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from src.core.llm_judge import LLMJudge, JudgeResult, JudgeMetrics
 
 logger = logging.getLogger(__name__)
 
-# Confidence-based cascade thresholds
-# Scores at these extremes are highly unlikely to change with more judges
-SINGLE_JUDGE_HIGH_THRESHOLD = 90  # Score >= 90: clearly passing, skip 2nd judge
-SINGLE_JUDGE_LOW_THRESHOLD = 15   # Score <= 15: clearly failing, skip 2nd judge
+# Cascade thresholds — at these extremes a SECOND judge from a different family
+# must confirm within CASCADE_CONFIRMATION_TOLERANCE points.
+SINGLE_JUDGE_HIGH_THRESHOLD = 85  # Score >= 85: decisive-pass, requires confirmer
+SINGLE_JUDGE_LOW_THRESHOLD = 20   # Score <= 20: decisive-fail, requires confirmer
+
+# Cross-family confirmation gate (QO-061): confirmer must be within this many
+# points of the primary score for the cascade early-exit to be accepted.
+CASCADE_CONFIRMATION_TOLERANCE = 10
+
+
+class InsufficientPanelDiversity(RuntimeError):
+    """Raised when the active judge panel cannot supply two distinct model families.
+
+    QO-061 AC3: if the panel cannot supply two distinct families (e.g. Gemini
+    quota exhausted, Qwen exhausted, only Cerebras-Llama left), the eval is
+    paused rather than silently degrading to a same-family panel.
+    """
+
+
+@dataclass
+class JudgeConfig:
+    """Declarative judge slot — provider + model + family + role.
+
+    Used by `_build_judges_from_settings()` to materialize an `LLMJudge` once
+    the matching API key is available. The `family` field is the SOLE source of
+    truth for cross-family cascade-gate checks (NOT the slot index).
+    """
+    provider: str
+    model: str
+    family: str
+    role: str  # "primary" | "secondary" | "tiebreaker"
+    base_url: Optional[str] = None
 
 
 @dataclass
@@ -31,7 +69,7 @@ class ConsensusResult:
     """Result from multi-judge consensus."""
     score: int
     explanation: str
-    method: str  # "consensus", "majority", "single", "fuzzy"
+    method: str  # "consensus", "majority", "single", "fuzzy", "cascade"
     individual_scores: List[int]
     individual_methods: List[str]
     agreement: bool  # Did judges agree within threshold?
@@ -40,99 +78,167 @@ class ConsensusResult:
     cached: bool = False
     input_tokens: int = 0
     output_tokens: int = 0
+    judge_anomalies: List[str] = field(default_factory=list)
+
+
+# ── QO-061 free-tier panel — 3 distinct model families ──────────────────────
+# Order: primary → secondary (cross-family confirmer) → tiebreaker.
+# Per AC1 + AC2: all three families MUST be distinct.
+FREE_TIER_PANEL: List[JudgeConfig] = [
+    JudgeConfig(
+        provider="cerebras",
+        model="llama3.1-8b",
+        family="meta_llama",
+        role="primary",
+    ),
+    JudgeConfig(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        family="google_gemini",
+        role="secondary",
+    ),
+    JudgeConfig(
+        provider="openrouter",
+        model="qwen/qwen3-next-80b-a3b-instruct:free",
+        family="alibaba_qwen",
+        role="tiebreaker",
+    ),
+]
+
+# Fallback configs used when Gemini quota is exhausted (AC11). Selected ONLY
+# from families NOT yet present in the active panel — never silently swap to
+# the same family.
+GEMINI_FALLBACK_PANEL: List[JudgeConfig] = [
+    JudgeConfig(
+        provider="mistral",
+        model="mistral-large-latest",
+        family="mistral",
+        role="secondary",
+    ),
+]
+
+
+def _build_judge_from_config(cfg: JudgeConfig) -> Optional[LLMJudge]:
+    """Materialize an LLMJudge from a JudgeConfig if the matching API key exists."""
+    from src.config import settings
+
+    key_attr = f"{cfg.provider}_api_key"
+    key = getattr(settings, key_attr, None) or ""
+    if not key:
+        return None
+
+    base_url = cfg.base_url
+    model = cfg.model
+    if cfg.provider == "cerebras":
+        base_url = base_url or settings.cerebras_base_url
+    elif cfg.provider == "gemini":
+        base_url = base_url or settings.gemini_base_url
+    elif cfg.provider == "openrouter":
+        base_url = base_url or settings.openrouter_base_url
+    elif cfg.provider == "mistral":
+        base_url = base_url or settings.mistral_base_url
+    elif cfg.provider == "groq":
+        base_url = base_url or "https://api.groq.com/openai/v1"
+
+    return LLMJudge(
+        api_key=key,
+        model=model,
+        provider=cfg.provider,
+        base_url=base_url or "",
+        family=cfg.family,
+    )
 
 
 def _build_judges_from_settings() -> List[LLMJudge]:
-    """Build a list of diverse LLM judges from available API keys.
+    """Build the family-diverse free-tier judge panel (QO-061).
 
-    Priority order optimized for cost: free providers first, paid last.
-    The first 3 judges are used for consensus (judge 1, judge 2, tiebreaker).
-    Keeping paid providers at the end ensures they're only used when free
-    providers are exhausted.
+    Order:
+        1. Cerebras-Llama-3.1-8B (meta_llama) — primary
+        2. Gemini Flash         (google_gemini) — secondary / cascade confirmer
+        3. Qwen 80B             (alibaba_qwen) — tiebreaker
+
+    Gemini-quota fallback (AC11): if Gemini key missing OR exhausted, slot 2
+    is filled by Mistral (or Qwen if Mistral missing) — never by another
+    meta_llama judge. The cascade gate continues to require a non-meta_llama
+    confirmer.
+
+    Paid providers (DeepSeek/OpenAI/Anthropic) are NOT used in the free-tier
+    panel — they're only available via explicit JudgeConfig injection.
     """
-    from src.config import settings
+    judges: List[LLMJudge] = []
+    seen_families: set = set()
 
-    judges = []
-
-    # --- Free providers first (consensus judges 1-3 should be free) ---
-
-    # Priority 1: Cerebras (free: 1M TPD, fast)
-    if settings.cerebras_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.cerebras_api_key,
-            model=settings.cerebras_model,
-            provider="cerebras",
-            base_url=settings.cerebras_base_url,
-        ))
-
-    # Priority 2: Groq (free: 500K TPD, fast)
-    if settings.groq_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.groq_api_key,
-            model=settings.groq_model,
-            provider="groq",
-            base_url="https://api.groq.com/openai/v1",
-        ))
-
-    # Priority 3: OpenRouter (free: Qwen3 80B, 200 RPD)
-    if settings.openrouter_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.openrouter_api_key,
-            model=settings.openrouter_model,
-            provider="openrouter",
-            base_url=settings.openrouter_base_url,
-        ))
-
-    # Priority 4: Gemini (free: 250 RPD, high quality)
-    if settings.gemini_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-            provider="gemini",
-            base_url=settings.gemini_base_url,
-        ))
-
-    # Priority 5: Mistral (free: 2 RPM, slow)
-    if settings.mistral_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.mistral_api_key,
-            model=settings.mistral_model,
-            provider="mistral",
-            base_url=settings.mistral_base_url,
-        ))
-
-    # --- Paid providers last (only used if free providers exhausted) ---
-
-    # Priority 6: DeepSeek (credits, cheap)
-    if settings.deepseek_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.deepseek_api_key,
-            model=settings.deepseek_model,
-            provider="deepseek",
-            base_url=settings.deepseek_base_url,
-        ))
-
-    # Priority 7: OpenAI (paid, highest quality — only as last resort)
-    if settings.openai_api_key:
-        judges.append(LLMJudge(
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            provider="openai",
-            base_url=settings.openai_base_url,
-        ))
+    for cfg in FREE_TIER_PANEL:
+        judge = _build_judge_from_config(cfg)
+        if judge:
+            judges.append(judge)
+            seen_families.add(judge.family)
+        elif cfg.role == "secondary":
+            # Gemini missing/exhausted → fall back to alternate non-Llama family
+            for fb_cfg in GEMINI_FALLBACK_PANEL:
+                if fb_cfg.family in seen_families:
+                    continue
+                fb_judge = _build_judge_from_config(fb_cfg)
+                if fb_judge:
+                    logger.warning(
+                        f"Gemini secondary slot unavailable; falling back to "
+                        f"{fb_cfg.provider}/{fb_cfg.model} (family={fb_cfg.family})"
+                    )
+                    judges.append(fb_judge)
+                    seen_families.add(fb_judge.family)
+                    break
 
     return judges
 
 
+def _validate_panel_diversity(judges: List[LLMJudge]) -> None:
+    """Enforce AC2: every judge in the active panel must belong to a unique family.
+
+    Raises:
+        InsufficientPanelDiversity: if any two judges share a family, OR if
+        the panel cannot supply at least two distinct families.
+    """
+    families = [j.family for j in judges if j.is_llm_available]
+    unique_families = set(families)
+    if len(unique_families) < 2:
+        raise InsufficientPanelDiversity(
+            f"Active panel must supply ≥2 distinct model families; "
+            f"got {len(unique_families)}: {sorted(unique_families)}"
+        )
+    if len(unique_families) != len(families):
+        raise InsufficientPanelDiversity(
+            f"Panel has duplicate families: {families}. "
+            "Free-tier panel requires Cerebras-Llama + Gemini + Qwen (3 distinct)."
+        )
+
+
+def _pick_confirmer(primary: LLMJudge, panel: List[LLMJudge]) -> Optional[LLMJudge]:
+    """Pick the cross-family confirmer for cascade-gate early-exit.
+
+    QO-061 AC3: the confirmer MUST be from a different family than `primary`,
+    and MUST be available. Falls through to None if no eligible confirmer.
+    """
+    for j in panel:
+        if j is primary:
+            continue
+        if not j.is_llm_available:
+            continue
+        if j.family != primary.family:
+            return j
+    return None
+
+
 class ConsensusJudge:
     """
-    Multi-judge consensus evaluator.
+    Multi-judge consensus evaluator with QO-061 cross-family cascade gate.
 
-    Runs up to 3 diverse judges in parallel. Aggregation:
-    - All 3 agree (within threshold): median score, high confidence
-    - 2 of 3 agree: take agreeing pair's median
-    - All disagree: weighted average, flag for review
-    - Early termination: if first 2 agree, skip 3rd
+    Strategy:
+    - Run primary judge.
+    - If primary score is decisive (>=85 or <=20):
+        * Pick a confirmer from a DIFFERENT family.
+        * If confirmer agrees within 10 pts → accept, single early exit.
+        * Otherwise → fall through to full 3-judge consensus.
+    - Otherwise → standard 2-judge consensus (3rd as tiebreaker on disagreement).
     """
 
     def __init__(
@@ -155,7 +261,7 @@ class ConsensusJudge:
         self.metrics = JudgeMetrics()
         self._cascade_exits = 0  # Track confidence-based cascade early exits
 
-        available = [j.provider for j in self._judges if j.is_llm_available]
+        available = [(j.provider, j.family) for j in self._judges if j.is_llm_available]
         logger.info(
             f"ConsensusJudge: {len(available)} LLM judges available: {available}. "
             f"Min={min_judges}, threshold={agreement_threshold}"
@@ -173,6 +279,18 @@ class ConsensusJudge:
     @property
     def is_consensus_possible(self) -> bool:
         return self.judges_available >= self._min_judges
+
+    @property
+    def panel_families(self) -> List[str]:
+        """Families of judges currently in the active panel (in order)."""
+        return [j.family for j in self._judges if j.is_llm_available]
+
+    def assert_panel_diversity(self) -> None:
+        """Public AC2 check — call before running an eval to fail fast.
+
+        Raises InsufficientPanelDiversity if the panel cannot supply 2 families.
+        """
+        _validate_panel_diversity(self._judges)
 
     def reset_keys(self):
         """Reset all exhausted API keys across judges. Call between evaluations."""
@@ -214,14 +332,13 @@ class ConsensusJudge:
         self, question: str, expected: str, answer: str, test_type: str = ""
     ) -> ConsensusResult:
         """
-        Run multi-judge consensus evaluation.
+        Run multi-judge consensus evaluation with QO-061 cross-family cascade gate.
 
         Strategy:
-        0. If test_type is fuzzy-routable, skip all LLM judges (use fuzzy scorer)
-        1. Run first 2 judges in parallel
-        2. If they agree → return immediately (early termination)
-        3. If they disagree → run 3rd judge as tiebreaker
-        4. Aggregate with median/majority logic
+        0. If test_type is fuzzy-routable, skip all LLM judges (use fuzzy scorer).
+        1. Run primary (slot 0).
+        2. If decisive score → pick cross-family confirmer; if agree within 10 → exit.
+        3. Otherwise → run remaining judges for full consensus.
         """
         from src.core.llm_judge import FUZZY_ROUTABLE_TEST_TYPES
 
@@ -272,36 +389,100 @@ class ConsensusJudge:
                     latency_ms=result.latency_ms,
                 )
 
-        # Phase 0.5: Confidence-based cascade — single-judge early exit
-        # Run 1st judge alone; if score is decisive, skip remaining judges
+        # ── Phase 1: primary judge ────────────────────────────────────────
         self.metrics.llm_calls += 1
         first_result = await llm_judges[0].ajudge(question, expected, answer)
-        self.metrics.record_tokens(first_result.provider or llm_judges[0].provider, first_result.input_tokens, first_result.output_tokens)
-        if first_result.score >= SINGLE_JUDGE_HIGH_THRESHOLD or first_result.score <= SINGLE_JUDGE_LOW_THRESHOLD:
-            self._cascade_exits += 1
-            logger.debug(
-                f"Cascade early exit: score={first_result.score} "
-                f"(threshold: >={SINGLE_JUDGE_HIGH_THRESHOLD} or <={SINGLE_JUDGE_LOW_THRESHOLD})"
-            )
-            return ConsensusResult(
-                score=first_result.score,
-                explanation=f"Cascade ({first_result.method}): {first_result.explanation}",
-                method="cascade",
-                individual_scores=[first_result.score],
-                individual_methods=[first_result.method],
-                agreement=True,
-                judges_used=1,
-                latency_ms=first_result.latency_ms,
-                input_tokens=first_result.input_tokens,
-                output_tokens=first_result.output_tokens,
-            )
+        self.metrics.record_tokens(
+            first_result.provider or llm_judges[0].provider,
+            first_result.input_tokens,
+            first_result.output_tokens,
+        )
 
-        # Phase 1: Score was ambiguous — run 2nd judge
+        decisive = (
+            first_result.score >= SINGLE_JUDGE_HIGH_THRESHOLD
+            or first_result.score <= SINGLE_JUDGE_LOW_THRESHOLD
+        )
+
+        # ── Phase 2: cascade gate (QO-061) ────────────────────────────────
+        # Decisive score must be confirmed by a DIFFERENT-family judge within
+        # CASCADE_CONFIRMATION_TOLERANCE points before the early-exit fires.
+        if decisive:
+            confirmer = _pick_confirmer(llm_judges[0], llm_judges)
+            if confirmer is None:
+                # No cross-family confirmer available — fall through to full consensus.
+                # Do NOT accept the primary score alone; that would re-introduce the
+                # null-model attack regime.
+                logger.debug(
+                    f"Cascade gate: no cross-family confirmer for primary={llm_judges[0].family}; "
+                    "falling through to full consensus."
+                )
+            else:
+                try:
+                    self.metrics.llm_calls += 1
+                    confirm_result = await confirmer.ajudge(question, expected, answer)
+                    self.metrics.record_tokens(
+                        confirm_result.provider or confirmer.provider,
+                        confirm_result.input_tokens,
+                        confirm_result.output_tokens,
+                    )
+                    if abs(confirm_result.score - first_result.score) <= CASCADE_CONFIRMATION_TOLERANCE:
+                        # Cross-family agreement on a decisive score — accept early exit
+                        self._cascade_exits += 1
+                        avg = int((first_result.score + confirm_result.score) / 2)
+                        return ConsensusResult(
+                            score=avg,
+                            explanation=(
+                                f"Cascade ({first_result.method}+{confirm_result.method}, "
+                                f"{llm_judges[0].family}+{confirmer.family}): "
+                                f"{first_result.explanation}"
+                            ),
+                            method="cascade",
+                            individual_scores=[first_result.score, confirm_result.score],
+                            individual_methods=[first_result.method, confirm_result.method],
+                            agreement=True,
+                            judges_used=2,
+                            latency_ms=max(first_result.latency_ms, confirm_result.latency_ms),
+                            input_tokens=first_result.input_tokens + confirm_result.input_tokens,
+                            output_tokens=first_result.output_tokens + confirm_result.output_tokens,
+                        )
+                    # Cross-family disagreement on a decisive score → escalate.
+                    logger.debug(
+                        f"Cascade gate disagreement: primary={first_result.score} "
+                        f"({llm_judges[0].family}) vs confirmer={confirm_result.score} "
+                        f"({confirmer.family}); escalating to full consensus."
+                    )
+                    # Hold confirmer result for full-consensus phase
+                    valid_results = [first_result, confirm_result]
+                    scores = [first_result.score, confirm_result.score]
+                    return await self._full_consensus_after_disagreement(
+                        question, expected, answer, llm_judges,
+                        valid_results, scores, used_judges={llm_judges[0], confirmer},
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Cascade confirmer failed: {e}; falling through to full consensus."
+                    )
+                    # Confirmer healthcheck/quota failed — fall through to a
+                    # FULL-CONSENSUS path that uses the remaining judges
+                    # (skipping the failed confirmer). We must NOT accept the
+                    # primary score alone (that would re-introduce the null-model
+                    # attack regime).
+                    return await self._full_consensus_after_disagreement(
+                        question, expected, answer, llm_judges,
+                        [first_result], [first_result.score],
+                        used_judges={llm_judges[0], confirmer},
+                    )
+
+        # ── Phase 3: standard 2-judge consensus (non-decisive) ────────────
         if len(llm_judges) >= 2:
             try:
                 self.metrics.llm_calls += 1
                 second_result = await llm_judges[1].ajudge(question, expected, answer)
-                self.metrics.record_tokens(second_result.provider or llm_judges[1].provider, second_result.input_tokens, second_result.output_tokens)
+                self.metrics.record_tokens(
+                    second_result.provider or llm_judges[1].provider,
+                    second_result.input_tokens,
+                    second_result.output_tokens,
+                )
                 valid_results = [first_result, second_result]
             except Exception as e:
                 logger.warning(f"Second judge failed: {e}")
@@ -343,7 +524,7 @@ class ConsensusJudge:
                 output_tokens=total_out,
             )
 
-        # Phase 2: Disagreement — run 3rd judge as tiebreaker (if available)
+        # Phase 4: Disagreement — run 3rd judge as tiebreaker (if available)
         if len(llm_judges) >= 3:
             try:
                 self.metrics.llm_calls += 1
@@ -353,6 +534,40 @@ class ConsensusJudge:
                 scores.append(third_result.score)
             except Exception as e:
                 logger.warning(f"Third judge failed: {e}")
+
+        return self._aggregate(valid_results, scores)
+
+    async def _full_consensus_after_disagreement(
+        self,
+        question: str,
+        expected: str,
+        answer: str,
+        llm_judges: List[LLMJudge],
+        valid_results: List[JudgeResult],
+        scores: List[int],
+        used_judges,
+    ) -> ConsensusResult:
+        """Continue to full 3-judge consensus after cascade-gate disagreement.
+
+        We've already invoked primary + cross-family confirmer (each from a
+        different family). Run any remaining judges to round out a 3-judge
+        committee, then aggregate.
+        """
+        for judge in llm_judges:
+            if judge in used_judges:
+                continue
+            try:
+                self.metrics.llm_calls += 1
+                r = await judge.ajudge(question, expected, answer)
+                self.metrics.record_tokens(
+                    r.provider or judge.provider, r.input_tokens, r.output_tokens
+                )
+                valid_results.append(r)
+                scores.append(r.score)
+                if len(valid_results) >= 3:
+                    break
+            except Exception as e:
+                logger.warning(f"Tertiary judge failed: {e}")
 
         return self._aggregate(valid_results, scores)
 

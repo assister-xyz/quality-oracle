@@ -316,10 +316,20 @@ class TestGap3CorrelationE2E:
             "Negative correlation should penalize confidence"
 
     def test_positive_correlation_boosts_confidence(self):
-        """Strong positive production outcomes should boost confidence."""
-        # Build feedback that trends upward → positive correlation
+        """Eval and production scores moving together → positive Pearson r → confidence boost.
+
+        QO-061: correlation is on (eval_score_at_time, outcome_score) pairs,
+        NOT (feedback_index, outcome_score). Test data must vary the eval score
+        across feedback rows for a real correlation to be computable.
+        """
+        # Build paired (eval_at_time, outcome) data with positive correlation.
+        # 10 rows where eval_at_time ranges 60..78 and outcome tracks it tightly.
         feedback = [
-            {"outcome": "success", "outcome_score": 60 + i * 3}
+            {
+                "outcome": "success",
+                "outcome_score": 60 + i * 3,
+                "eval_score_at_time": 60 + i * 2,
+            }
             for i in range(10)
         ]
 
@@ -330,7 +340,7 @@ class TestGap3CorrelationE2E:
         )
 
         assert report.confidence_adjustment > 0, \
-            f"Positive trend should boost confidence, got adj={report.confidence_adjustment}"
+            f"Positive eval-vs-outcome correlation should boost confidence, got adj={report.confidence_adjustment}"
 
     def test_empty_feedback_safe_defaults(self):
         """No feedback yet → safe defaults, no sandbagging flag."""

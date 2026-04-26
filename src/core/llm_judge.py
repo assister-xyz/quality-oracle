@@ -22,6 +22,50 @@ CACHE_TTL = 86400  # 24 hours
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0
 
+
+# Model family lookup — used by QO-061 cascade gate for cross-family confirmation.
+# Mapping: judge identity (provider+model) → model family. Same model family
+# across different providers is treated as the SAME family for diversity (e.g.
+# Cerebras-Llama and Groq-Llama are both meta_llama).
+_FAMILY_BY_PROVIDER_DEFAULT = {
+    "openai": "openai_gpt",
+    "anthropic": "anthropic_claude",
+    "deepseek": "deepseek",
+    "mistral": "mistral",
+    "gemini": "google_gemini",
+    "google_gemini": "google_gemini",
+    # cerebras/groq/openrouter all serve mixed-family models — prefer model-string match below
+}
+
+
+def _infer_model_family(provider: str, model: str) -> str:
+    """Map (provider, model) → model family.
+
+    Family is the underlying model lineage, not the API host. Two different
+    providers serving the same base model (Cerebras-Llama vs Groq-Llama)
+    have the SAME family for diversity purposes.
+    """
+    p = (provider or "").lower()
+    m = (model or "").lower()
+    # Match on model string first — most reliable
+    if "llama" in m:
+        return "meta_llama"
+    if "qwen" in m:
+        return "alibaba_qwen"
+    if "gemini" in m:
+        return "google_gemini"
+    if "gpt" in m or "openai" in m or "o1" in m or "o3" in m:
+        # gpt-oss is Cerebras's open-weight GPT — distinct enough to call openai_gpt
+        return "openai_gpt"
+    if "claude" in m or "haiku" in m or "sonnet" in m or "opus" in m:
+        return "anthropic_claude"
+    if "deepseek" in m:
+        return "deepseek"
+    if "mistral" in m or "mixtral" in m:
+        return "mistral"
+    # Fall back on provider mapping
+    return _FAMILY_BY_PROVIDER_DEFAULT.get(p, p or "unknown")
+
 # Per-provider rate limits (requests per minute)
 _PROVIDER_RPM = {
     "groq": 20,       # Free tier: 30 RPM, conservative headroom
@@ -417,6 +461,7 @@ class LLMJudge:
         fallback2_key: Optional[str] = None,
         fallback2_model: str = "llama-3.3-70b-versatile",
         fallback2_provider: str = "groq",
+        family: Optional[str] = None,
     ):
         # Support comma-separated keys for rotation
         self._primary_rotator = _KeyRotator(api_key) if api_key else None
@@ -424,6 +469,9 @@ class LLMJudge:
         self.model = model
         self.provider = provider
         self.base_url = base_url
+        # Model family — used by ConsensusJudge cascade gate to enforce cross-family confirmation.
+        # See QO-061. Inferred from provider+model if not explicit.
+        self.family = family or _infer_model_family(provider, model)
         self._fallback_rotator = _KeyRotator(fallback_key) if fallback_key else None
         self.fallback_key = self._fallback_rotator.current if self._fallback_rotator else None
         self.fallback_model = fallback_model
