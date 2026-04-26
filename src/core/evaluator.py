@@ -70,10 +70,11 @@ def compute_skill_tier(
     delta: Optional[float],
     level,
     baseline_status: str = "ok",
+    has_high_probe_fail: bool = False,
 ) -> str:
     """Compute the public-tier name for a skill evaluation.
 
-    R7 §9 + AC5 + AC10:
+    R7 §9 + AC5 + AC10 + QO-053-E AC9:
 
     * ``MANIFEST`` (L1)        → ``verified`` if absolute ≥ 50, else ``failed``.
     * ``FUNCTIONAL`` (L2)      → requires ``delta ≥ 10`` AND ``absolute ≥ 65``
@@ -82,9 +83,10 @@ def compute_skill_tier(
                                   ``verified`` (no measured uplift).
                                   Above the threshold:
                                   ``bronze`` (<75) / ``silver`` (<85) / ``gold``.
-    * ``DOMAIN_EXPERT`` (L3)   → defers to QO-053-E probe gate; for now we
-                                  apply the same L2 tier ladder unless an
-                                  explicit probe-pass-rate is propagated.
+    * ``DOMAIN_EXPERT`` (L3)   → QO-053-E AC9 — if ANY probe with severity
+                                  HIGH returns FAIL, cap at ``silver``
+                                  regardless of axis scores. Otherwise the
+                                  L2 ladder applies.
 
     Always returns a lowercase string.
     """
@@ -103,7 +105,7 @@ def compute_skill_tier(
             return "silver"
         return "gold"
 
-    # DOMAIN_EXPERT — same ladder for now; QO-053-E will layer probe gates.
+    # DOMAIN_EXPERT — QO-053-E AC9 layers a probe-gate on top of the L2 ladder.
     if baseline_status == "failed":
         return "verified"
     if delta is None or delta < 10 or absolute < 65:
@@ -111,6 +113,12 @@ def compute_skill_tier(
     if absolute < 75:
         return "bronze"
     if absolute < 85:
+        return "silver"
+    # AC9: at L3, a HIGH-severity probe FAIL prevents earning gold; cap at
+    # silver — never deny down to bronze when absolute already merits gold,
+    # so the tier remains monotone in absolute score for builders who fix
+    # the HIGH and re-submit.
+    if has_high_probe_fail:
         return "silver"
     return "gold"
 
