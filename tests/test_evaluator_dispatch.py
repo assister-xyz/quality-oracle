@@ -90,11 +90,14 @@ async def test_dispatch_skill_calls_skill_runner(monkeypatch, fake_col):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_agent_records_not_implemented(monkeypatch, fake_col):
+async def test_dispatch_agent_routes_to_rest_chat(monkeypatch, fake_col):
+    """AGENT generic type now routes to the REST chat runner (QO-058 wiring)."""
     mcp = AsyncMock()
     skill = AsyncMock()
+    rest = AsyncMock()
     monkeypatch.setattr(ev_module, "_run_evaluation_mcp", mcp)
     monkeypatch.setattr(ev_module, "_run_evaluation_skill", skill)
+    monkeypatch.setattr(ev_module, "_run_evaluation_rest_chat", rest)
 
     req = EvaluateRequest(
         target_url="http://agent.example.com",
@@ -106,11 +109,27 @@ async def test_dispatch_agent_records_not_implemented(monkeypatch, fake_col):
 
     assert mcp.await_count == 0
     assert skill.await_count == 0
-    # The dispatcher must record a failed status with an explicit error
-    assert len(fake_col.updates) == 1
-    set_payload = fake_col.updates[0][0][1]["$set"]
-    assert set_payload["status"] == "failed"
-    assert "QO-058" in set_payload["error"]
+    assert rest.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_a2a_routes_to_a2a_runner(monkeypatch, fake_col):
+    """A2A_AGENT type routes to the A2A runner."""
+    mcp = AsyncMock()
+    a2a = AsyncMock()
+    monkeypatch.setattr(ev_module, "_run_evaluation_mcp", mcp)
+    monkeypatch.setattr(ev_module, "_run_evaluation_a2a", a2a)
+
+    req = EvaluateRequest(
+        target_url="http://a2a.example.com",
+        target_type=TargetType.A2A_AGENT,
+        level=EvalLevel.FUNCTIONAL,
+        eval_mode=EvalMode.CERTIFIED,
+    )
+    await ev_module._run_evaluation("eval-a2a", req)
+
+    assert mcp.await_count == 0
+    assert a2a.await_count == 1
 
 
 # ── EvalLevel mapping (CB3) ─────────────────────────────────────────────────

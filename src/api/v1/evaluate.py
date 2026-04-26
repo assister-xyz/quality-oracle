@@ -458,21 +458,13 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         return await _run_evaluation_mcp(evaluation_id, request)
     if request.target_type == _TargetType.SKILL:
         return await _run_evaluation_skill(evaluation_id, request)
+    if request.target_type == _TargetType.A2A_AGENT:
+        return await _run_evaluation_a2a(evaluation_id, request)
+    if request.target_type in (_TargetType.REST_CHAT, _TargetType.OPENAPI_AGENT):
+        return await _run_evaluation_rest_chat(evaluation_id, request)
     if request.target_type == _TargetType.AGENT:
-        # Owned by QO-058. Mark evaluation as failed with a clear reason
-        # so the API response is honest (R0: landing-page honesty fix).
-        logger.error(
-            f"[{evaluation_id[:8]}] Generic agent eval not implemented (QO-058)"
-        )
-        await evaluations_col().update_one(
-            {"_id": evaluation_id},
-            {"$set": {
-                "status": EvalStatus.FAILED.value,
-                "error": "Generic agent eval shipping in QO-058",
-                "error_type": "not_implemented",
-            }},
-        )
-        return
+        # Generic AGENT type — no specific protocol; treat as REST chat by default.
+        return await _run_evaluation_rest_chat(evaluation_id, request)
     logger.error(
         f"[{evaluation_id[:8]}] Unsupported target_type={request.target_type!r}"
     )
