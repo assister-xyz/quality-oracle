@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TargetType(str, Enum):
@@ -524,3 +524,70 @@ class LadderEntry(BaseModel):
     last_challenge_at: Optional[datetime] = None
     seeded_at: datetime = Field(default_factory=datetime.utcnow)
     defenses: int = 0
+
+
+# ── Skill Parser & Spec Compliance (QO-053-A) ────────────────────────────────
+
+
+class Severity(str, Enum):
+    """Severity tier for spec violations and anti-pattern findings."""
+    HIGH = "high"
+    MED = "med"
+    LOW = "low"
+
+
+class ParsedSkill(BaseModel):
+    """Parsed Anthropic Agent-Skills SKILL.md (R1 mirror).
+
+    Fields populated by `core.skill_parser.parse_skill_md`. Extra YAML keys land
+    in `frontmatter_raw` so callers can inspect off-spec input transparently.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str  # NFKC-normalized
+    description: str
+    license: Optional[str] = None
+    compatibility: Optional[str] = None
+    metadata: Dict[str, str] = Field(default_factory=dict)
+    allowed_tools: List[str] = Field(default_factory=list, alias="allowed-tools")
+    body: str = ""
+    body_size_bytes: int = 0
+    body_lines: int = 0
+    body_tokens: Optional[int] = None
+    spec_dirs: Dict[str, bool] = Field(default_factory=dict)
+    convention_dirs: Dict[str, bool] = Field(default_factory=dict)
+    extra_dirs: List[str] = Field(default_factory=list)
+    folder_name: str = ""
+    folder_name_nfkc: str = ""
+    frontmatter_raw: Dict[str, Any] = Field(default_factory=dict)
+    git_sha: Optional[str] = None
+    parse_warnings: List[str] = Field(default_factory=list)
+
+
+class Violation(BaseModel):
+    """Single spec-compliance violation produced by `validate_skill`."""
+    rule: str  # AP1, AP2, ..., AP18 (or AP5_LONG warning)
+    severity: Severity
+    field: Optional[str] = None
+    line: Optional[int] = None
+    message: str
+    suggestion: str = ""
+    score_deduction: int = 0  # 0–20
+
+
+class SpecCompliance(BaseModel):
+    """Aggregate compliance result over a single ParsedSkill."""
+    score: int = 100  # 0–100
+    violations: List[Violation] = Field(default_factory=list)
+    passed_hard_fails: bool = True  # False if any HIGH violation
+
+
+class AntiPattern(BaseModel):
+    """One anti-pattern finding produced by `detect_anti_patterns`."""
+    id: str  # AP1..AP18
+    severity: Severity
+    field: Optional[str] = None
+    line: Optional[int] = None
+    regex_match: Optional[str] = None
+    message: str
+    suggestion: str = ""
