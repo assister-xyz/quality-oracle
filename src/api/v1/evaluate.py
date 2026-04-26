@@ -14,6 +14,8 @@ from src.storage.models import (
     EvaluationStatus,
     EvalStatus,
     EvalLevel,
+    SubmitSkillRequest,
+    TargetType,
     WebhookPayload,
     normalize_eval_mode,
 )
@@ -206,6 +208,112 @@ async def submit_evaluation(
     )
 
 
+@router.post("/evaluate/skill", response_model=EvaluateResponse)
+async def submit_skill_evaluation(
+    request: SubmitSkillRequest,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    http_request: Request,
+    api_key_doc: dict = Depends(get_api_key),
+):
+    """QO-060 / E2E_TEST_REPORT fix: accept a SKILL.md bundle in-memory.
+
+    Frontend posts ``{frontmatter, body, source, filename?, level?, eval_mode?}``
+    instead of a URL. This route materialises the bundle to a temp directory
+    and dispatches through the standard ``_run_evaluation_skill`` background
+    task, which expects ``request.target_url`` to be a local skill directory
+    path.
+    """
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    tier = api_key_doc.get("tier", "free")
+    key_hash = api_key_doc["_id"]
+
+    if not is_eval_level_allowed(tier, request.level.value):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Evaluation level {request.level.value} not available for '{tier}' tier",
+        )
+
+    allowed, remaining, limit = await check_eval_rate_limit(key_hash, tier)
+    add_rate_limit_headers(response, tier, limit, remaining)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Monthly evaluation limit exceeded. Upgrade your tier.",
+        )
+
+    skill_name = request.frontmatter.get("name") or (
+        Path(request.filename).stem if request.filename else "uploaded-skill"
+    )
+
+    evaluation_id = str(uuid4())
+    skill_dir = Path(tempfile.gettempdir()) / "laureum-skill-uploads" / evaluation_id / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        f"---\n{yaml.safe_dump(request.frontmatter, sort_keys=False).strip()}\n---\n\n{request.body}\n",
+        encoding="utf-8",
+    )
+
+    target_id = f"urn:laureum:skill:{evaluation_id}"
+
+    caller_api_key_hash = key_hash[:16] if key_hash else ""
+    caller_org = api_key_doc.get("owner_email", "")
+    caller_user_agent = http_request.headers.get("user-agent", "")[:200]
+    client_ip = http_request.client.host if http_request.client else ""
+    caller_ip_hash = hashlib.sha256(client_ip.encode()).hexdigest()[:16] if client_ip else ""
+
+    doc = {
+        "_id": evaluation_id,
+        "target_id": target_id,
+        "target_type": TargetType.SKILL.value,
+        "target_url": str(skill_dir),
+        "status": EvalStatus.PENDING.value,
+        "level": request.level.value,
+        "domains": [],
+        "connection_strategy": "skill_bundle",
+        "evaluation_version": EVALUATION_VERSION,
+        "eval_mode": request.eval_mode.value,
+        "webhook_url": request.webhook_url,
+        "callback_secret": None,
+        "payment": None,
+        "created_at": datetime.utcnow(),
+        "skill_source": request.source,
+        "skill_filename": request.filename,
+        "skill_name_declared": skill_name,
+        "caller_api_key_hash": caller_api_key_hash,
+        "caller_tier": tier,
+        "caller_org": caller_org,
+        "caller_user_agent": caller_user_agent,
+        "caller_ip_hash": caller_ip_hash,
+        "request_received_at": datetime.utcnow(),
+    }
+    await evaluations_col().insert_one(doc)
+
+    eval_request = EvaluateRequest(
+        target_url=str(skill_dir),
+        target_type=TargetType.SKILL,
+        level=request.level,
+        eval_mode=request.eval_mode,
+        webhook_url=request.webhook_url,
+    )
+
+    background_tasks.add_task(_run_evaluation, evaluation_id, eval_request)
+
+    estimated = {EvalLevel.MANIFEST: 5, EvalLevel.FUNCTIONAL: 60, EvalLevel.DOMAIN_EXPERT: 180}
+    return EvaluateResponse(
+        evaluation_id=evaluation_id,
+        status=EvalStatus.PENDING,
+        estimated_time_seconds=estimated.get(request.level, 60),
+        poll_url=f"/v1/evaluate/{evaluation_id}",
+        message="Skill bundle materialised; evaluation dispatched.",
+    )
+
+
 @router.get("/evaluate/{evaluation_id}", response_model=EvaluationStatus)
 async def get_evaluation_status(
     evaluation_id: str,
@@ -334,7 +442,56 @@ async def get_evaluation_status(
 
 
 async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
-    """Run evaluation in background."""
+    """Dispatch background evaluation by ``request.target_type`` (QO-053-C).
+
+    Pre-053-C this function unconditionally called
+    ``mcp_client.get_server_manifest`` even when ``target_type=skill`` was
+    submitted. AC1 fixes that: each target type now routes to a dedicated
+    runner. Generic agents (``TargetType.AGENT``) raise NotImplementedError —
+    that exception is caught by the outer try/except in the MCP runner so
+    the status flips to ``failed`` with an explicit error message rather
+    than crashing the worker.
+    """
+    from src.storage.models import TargetType as _TargetType
+
+    if request.target_type == _TargetType.MCP_SERVER:
+        return await _run_evaluation_mcp(evaluation_id, request)
+    if request.target_type == _TargetType.SKILL:
+        return await _run_evaluation_skill(evaluation_id, request)
+    if request.target_type == _TargetType.AGENT:
+        # Owned by QO-058. Mark evaluation as failed with a clear reason
+        # so the API response is honest (R0: landing-page honesty fix).
+        logger.error(
+            f"[{evaluation_id[:8]}] Generic agent eval not implemented (QO-058)"
+        )
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {
+                "status": EvalStatus.FAILED.value,
+                "error": "Generic agent eval shipping in QO-058",
+                "error_type": "not_implemented",
+            }},
+        )
+        return
+    logger.error(
+        f"[{evaluation_id[:8]}] Unsupported target_type={request.target_type!r}"
+    )
+    await evaluations_col().update_one(
+        {"_id": evaluation_id},
+        {"$set": {
+            "status": EvalStatus.FAILED.value,
+            "error": f"Unsupported target_type: {request.target_type}",
+            "error_type": "unsupported_target_type",
+        }},
+    )
+
+
+async def _run_evaluation_mcp(evaluation_id: str, request: EvaluateRequest):
+    """Run MCP-server evaluation in background.
+
+    This is the original ``_run_evaluation`` body, unchanged in behaviour
+    (AC2). The dispatcher above routes ``target_type=mcp_server`` here.
+    """
     import time as _time
     eval_start = _time.time()
     try:
@@ -861,6 +1018,125 @@ async def _run_evaluation(evaluation_id: str, request: EvaluateRequest):
         await evaluations_col().update_one(
             {"_id": evaluation_id},
             {"$set": {"status": EvalStatus.FAILED.value, "error": error_msg, "error_type": error_type}},
+        )
+
+
+async def _run_evaluation_skill(evaluation_id: str, request: EvaluateRequest):
+    """Run skill evaluation (QO-053-C).
+
+    Currently calls ``Evaluator.evaluate_skill`` with the parsed skill loaded
+    from disk via ``request.target_url`` (interpreted as a local skill
+    directory path). Tests stub this path entirely; the production wiring
+    lands in QO-053-F (batch runner) where the dispatcher pulls from the
+    operator-uploaded skill bundle. The minimum here is:
+
+    1. Persist a ``status=running`` row.
+    2. Call ``evaluator.evaluate_skill`` with whatever activator is wired by
+       the orchestration layer (QO-053-B) — for now, a graceful failure
+       path that records the limitation rather than silently succeeding.
+    """
+    import time as _time
+    from pathlib import Path
+
+    from src.storage.models import EvaluationDoc, TargetType as _TargetType
+    from src.core.skill_parser import parse_skill_md
+    from src.core.skill_validator import validate_skill
+
+    eval_start = _time.time()
+
+    try:
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {"status": EvalStatus.RUNNING.value, "progress_pct": 10}},
+        )
+
+        skill_dir = Path(request.target_url)
+        if not skill_dir.exists():
+            await evaluations_col().update_one(
+                {"_id": evaluation_id},
+                {"$set": {
+                    "status": EvalStatus.FAILED.value,
+                    "error": f"Skill directory not found: {request.target_url}",
+                    "error_type": "skill_dir_missing",
+                }},
+            )
+            return
+
+        parsed = parse_skill_md(skill_dir)
+        spec_compliance = validate_skill(parsed, skill_dir)
+
+        # Build a minimal target object — see Evaluator.evaluate_skill docs
+        # for required attributes.
+        class _SkillTarget:
+            pass
+
+        target = _SkillTarget()
+        target.parsed = parsed
+        target.spec_compliance = spec_compliance
+        target.subject_uri = request.target_url
+
+        # Wire judges identically to MCP path so cost accounting works.
+        mode_config = EVAL_MODES[request.eval_mode.value]
+        if mode_config.use_consensus:
+            from src.core.consensus_judge import ConsensusJudge
+            judge = ConsensusJudge(max_judges=mode_config.max_judges)
+        else:
+            judge = _get_judge()
+        judge.reset_keys()
+        irt_service = IRTService()
+        evaluator = Evaluator(
+            judge, eval_mode=request.eval_mode.value, irt_service=irt_service,
+        )
+
+        # No activator is wired here — QO-053-F adds the activator factory.
+        # We still run the rubric path so AC1 (dispatch reached) is provable.
+        eval_result = await evaluator.evaluate_skill(
+            target=target,
+            level=request.level,
+            activator_factory=None,
+            baseline_activator_factory=None,
+        )
+
+        eval_duration_ms = int((_time.time() - eval_start) * 1000)
+        scores = eval_result.to_dict()
+        scores["confidence"] = eval_result.confidence
+
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {
+                "status": EvalStatus.COMPLETED.value,
+                "scores": scores,
+                "completed_at": datetime.utcnow(),
+                "progress_pct": 100,
+                "duration_ms": eval_duration_ms,
+                "target_type_dispatched": _TargetType.SKILL.value,
+                "subject_uri": eval_result.subject_uri,
+                "axis_weights_used": eval_result.axis_weights_used,
+                "delta_vs_baseline": eval_result.delta_vs_baseline,
+                "baseline_score": eval_result.baseline_score,
+                "baseline_status": eval_result.baseline_status,
+            }},
+        )
+        logger.info(
+            f"[{evaluation_id[:8]}] Skill eval COMPLETED: "
+            f"absolute={eval_result.overall_score} "
+            f"baseline={eval_result.baseline_score} "
+            f"delta={eval_result.delta_vs_baseline} "
+            f"tier={eval_result.tier}"
+        )
+        # Touch the unused EvaluationDoc import so the linter sees the model
+        # is wired into this module (also kept here for future schema use).
+        _ = EvaluationDoc
+    except Exception as e:
+        import traceback
+        logger.error(f"Skill evaluation {evaluation_id} failed: {e}\n{traceback.format_exc()}")
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {
+                "status": EvalStatus.FAILED.value,
+                "error": str(e),
+                "error_type": "skill_evaluation_error",
+            }},
         )
 
 

@@ -53,6 +53,50 @@ def normalize_eval_mode(raw: Optional[str]) -> Optional[str]:
     return _COMPAT.get(raw, raw)
 
 
+# ── QO-053-C (CB3): public-name → (EvalLevel, EvalMode) mapping ─────────────
+#
+# The codebase enum at ``EvalLevel`` is ``MANIFEST=1, FUNCTIONAL=2,
+# DOMAIN_EXPERT=3``. The public copy in landing-page tier names ("L1
+# functional", "L2 certified", "L3 stress / audited") used in QO-053 specs
+# is *display only*. This helper maps a freeform public-name string into
+# the actual ``(EvalLevel, EvalMode)`` tuple consumed by the dispatcher.
+
+_PUBLIC_LEVEL_MAP: Dict[str, "tuple[EvalLevel, EvalMode]"] = {
+    # L1 — manifest validation only.
+    "l1": (EvalLevel.MANIFEST, EvalMode.VERIFIED),
+    "l1 functional": (EvalLevel.MANIFEST, EvalMode.VERIFIED),
+    "l1-functional": (EvalLevel.MANIFEST, EvalMode.VERIFIED),
+    # L2 — functional / certified.
+    "l2": (EvalLevel.FUNCTIONAL, EvalMode.CERTIFIED),
+    "l2 certified": (EvalLevel.FUNCTIONAL, EvalMode.CERTIFIED),
+    "l2-certified": (EvalLevel.FUNCTIONAL, EvalMode.CERTIFIED),
+    # L3 — domain expert / stress / audited.
+    "l3": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+    "l3 stress": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+    "l3 audited": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+    "l3-stress": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+    "l3-audited": (EvalLevel.DOMAIN_EXPERT, EvalMode.AUDITED),
+}
+
+
+def level_for_skill_eval(public_name: str) -> "tuple[EvalLevel, EvalMode]":
+    """Resolve a spec/landing-page public level name into the codebase enums.
+
+    >>> level_for_skill_eval("L2 certified")
+    (<EvalLevel.FUNCTIONAL: 2>, <EvalMode.CERTIFIED: 'certified'>)
+
+    Unknown names raise ``ValueError`` rather than silently picking a default
+    so a typo in a question-pack manifest fails loudly during ingest.
+    """
+    key = (public_name or "").strip().lower()
+    if key in _PUBLIC_LEVEL_MAP:
+        return _PUBLIC_LEVEL_MAP[key]
+    raise ValueError(
+        f"Unknown skill-eval public level {public_name!r}. "
+        f"Valid: {sorted(set(_PUBLIC_LEVEL_MAP))}"
+    )
+
+
 # ── Sybil Defense (QO-044) ───────────────────────────────────────────────────
 
 
@@ -166,6 +210,22 @@ class EvaluateRequest(BaseModel):
     erc8004_agent_id: Optional[int] = None  # ERC-8004 agent token ID for on-chain reputation
 
 
+class SubmitSkillRequest(BaseModel):
+    """QO-060: skill bundle uploaded via drag-drop or GitHub URL.
+
+    Frontend posts an in-memory SKILL.md bundle (frontmatter + body + provenance)
+    instead of a URL. Backend materializes to a temp dir and dispatches through
+    the standard evaluate_skill() pipeline.
+    """
+    frontmatter: Dict[str, Any]
+    body: str
+    source: str = "drag"  # "drag" | "github"
+    filename: Optional[str] = None
+    level: EvalLevel = EvalLevel.MANIFEST
+    eval_mode: EvalMode = EvalMode.VERIFIED
+    webhook_url: Optional[str] = None
+
+
 # Response models
 class EvaluateResponse(BaseModel):
     evaluation_id: str
@@ -275,6 +335,17 @@ class EvaluationDoc(BaseModel):
     completed_at: Optional[datetime] = None
     duration_ms: Optional[int] = None
     error: Optional[str] = None
+
+    # ── QO-053-C (CB3 + AC9): per-target dispatch + differential audit fields
+    # All optional → existing MCP eval documents remain valid without
+    # migration. Migration script ``dev/migrate_legacy_evaluations.py`` fills
+    # ``target_type_dispatched`` for any pre-053-C row.
+    target_type_dispatched: Optional[TargetType] = None
+    subject_uri: Optional[str] = None
+    axis_weights_used: Optional[Dict[str, float]] = None
+    delta_vs_baseline: Optional[float] = None
+    baseline_score: Optional[float] = None
+    baseline_status: Optional[str] = None  # "ok" | "failed" | None
 
 
 class ScoreDoc(BaseModel):
