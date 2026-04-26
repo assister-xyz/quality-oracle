@@ -1182,3 +1182,167 @@ async def _deliver_webhook(
             logger.info(f"Webhook delivered to {webhook_url}: status={resp.status_code}")
     except Exception as e:
         logger.warning(f"Webhook delivery failed for {evaluation_id}: {e}")
+
+
+# ── QO-058 generic-agent runners ─────────────────────────────────────────────
+
+
+async def _run_evaluation_a2a(evaluation_id: str, request: EvaluateRequest):
+    """Background runner for A2A_AGENT target type.
+
+    Resolves the URL through the cascade (so a passing through ``UNKNOWN``
+    or ``A2A_AGENT`` both work), runs :meth:`Evaluator.evaluate_a2a`,
+    persists the result. Mirrors the skill runner's failure shape so the
+    ``/v1/evaluate/{id}`` polling endpoint sees a uniform error envelope.
+    """
+    import time as _time
+    from src.core.target_resolver import resolve as resolve_target
+    from src.core.a2a_target import A2ATarget
+
+    eval_start = _time.time()
+    try:
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {"status": EvalStatus.RUNNING.value, "progress_pct": 10}},
+        )
+
+        # Try resolver first for cache + auto-detection; fall back to direct
+        # construction if the resolver doesn't pick A2A.
+        try:
+            target = await resolve_target(request.target_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(f"[{evaluation_id[:8]}] resolver fallback: {exc}")
+            target = A2ATarget(endpoint_url=request.target_url)
+
+        mode_config = EVAL_MODES[request.eval_mode.value]
+        if mode_config.use_consensus:
+            from src.core.consensus_judge import ConsensusJudge
+            judge = ConsensusJudge(max_judges=mode_config.max_judges)
+        else:
+            judge = _get_judge()
+        judge.reset_keys()
+        evaluator = Evaluator(judge, eval_mode=request.eval_mode.value)
+
+        result = await evaluator.evaluate_a2a(target)
+        duration_ms = int((_time.time() - eval_start) * 1000)
+
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {
+                "status": EvalStatus.COMPLETED.value,
+                "progress_pct": 100,
+                "scores": result.to_dict(),
+                "duration_ms": duration_ms,
+                "target_type_dispatched": result.target_type_dispatched.value if result.target_type_dispatched else None,
+            }},
+        )
+    except Exception as e:
+        logger.exception(f"[{evaluation_id[:8]}] A2A evaluation failed: {e}")
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {
+                "status": EvalStatus.FAILED.value,
+                "error": str(e),
+                "error_type": "a2a_evaluation_error",
+            }},
+        )
+
+
+async def _run_evaluation_rest_chat(evaluation_id: str, request: EvaluateRequest):
+    """Background runner for REST_CHAT (and OPENAPI_AGENT) target types.
+
+    Schema-inference failure (AC11) → status=failed,
+    error_type=schema_unobtainable. Verified-tier cap is enforced inside
+    :meth:`Evaluator.evaluate_rest_chat` (AC7).
+    """
+    import time as _time
+    from src.core.rest_chat_target import RESTChatTarget
+
+    eval_start = _time.time()
+    try:
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {"status": EvalStatus.RUNNING.value, "progress_pct": 10}},
+        )
+
+        mode_config = EVAL_MODES[request.eval_mode.value]
+        if mode_config.use_consensus:
+            from src.core.consensus_judge import ConsensusJudge
+            judge = ConsensusJudge(max_judges=mode_config.max_judges)
+        else:
+            judge = _get_judge()
+        judge.reset_keys()
+        evaluator = Evaluator(judge, eval_mode=request.eval_mode.value)
+
+        target = RESTChatTarget(endpoint_url=request.target_url, judge=judge)
+        result = await evaluator.evaluate_rest_chat(target)
+        duration_ms = int((_time.time() - eval_start) * 1000)
+
+        # AC11 surface: tier=failed → propagate the error_type for clean
+        # error UX without overloading the success path.
+        update: dict = {
+            "status": EvalStatus.COMPLETED.value,
+            "progress_pct": 100,
+            "scores": result.to_dict(),
+            "duration_ms": duration_ms,
+            "target_type_dispatched": (
+                result.target_type_dispatched.value
+                if result.target_type_dispatched else None
+            ),
+        }
+        if result.tier == "failed" and result.style_report and result.style_report.get("error_type") == "schema_unobtainable":
+            update["status"] = EvalStatus.FAILED.value
+            update["error"] = result.style_report.get("error", "Schema inference refused this target")
+            update["error_type"] = "schema_unobtainable"
+        await evaluations_col().update_one({"_id": evaluation_id}, {"$set": update})
+    except Exception as e:
+        logger.exception(f"[{evaluation_id[:8]}] REST chat evaluation failed: {e}")
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {
+                "status": EvalStatus.FAILED.value,
+                "error": str(e),
+                "error_type": "rest_chat_evaluation_error",
+            }},
+        )
+
+
+async def _run_evaluation_unknown(evaluation_id: str, request: EvaluateRequest):
+    """Caller submitted ``target_type=unknown`` — run cascade then re-dispatch.
+
+    Convenience for the landing-page form: operator pastes a URL without
+    declaring a type, we discover the protocol and route accordingly.
+    """
+    from src.core.evaluation_target import UnknownTargetError
+    from src.core.target_resolver import resolve as resolve_target
+    from src.storage.models import TargetType as _TargetType
+
+    try:
+        _, meta = await resolve_target(request.target_url, return_meta=True)
+    except UnknownTargetError as exc:
+        await evaluations_col().update_one(
+            {"_id": evaluation_id},
+            {"$set": {
+                "status": EvalStatus.FAILED.value,
+                "error": str(exc),
+                "error_type": "unknown_target_type",
+            }},
+        )
+        return
+
+    # Mutate request to reflect resolved type, then re-enter dispatch.
+    request.target_type = meta.target_type
+    if meta.target_type == _TargetType.MCP_SERVER:
+        return await _run_evaluation_mcp(evaluation_id, request)
+    if meta.target_type == _TargetType.A2A_AGENT:
+        return await _run_evaluation_a2a(evaluation_id, request)
+    if meta.target_type in (_TargetType.REST_CHAT, _TargetType.OPENAPI_AGENT):
+        return await _run_evaluation_rest_chat(evaluation_id, request)
+    await evaluations_col().update_one(
+        {"_id": evaluation_id},
+        {"$set": {
+            "status": EvalStatus.FAILED.value,
+            "error": f"Resolved unknown target to {meta.target_type.value} but no runner is wired",
+            "error_type": "unsupported_resolved_type",
+        }},
+    )

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import settings
 from src.api.v1.health import router as health_router
+from src.api.v1.discover import router as discover_router
 from src.api.v1.evaluate import router as evaluate_router
 from src.api.v1.scores import router as scores_router
 from src.api.v1.badges import router as badges_router
@@ -91,6 +92,7 @@ app.add_middleware(
 # API routes
 app.include_router(health_router, tags=["health"])
 app.include_router(evaluate_router, prefix="/v1", tags=["evaluation"])
+app.include_router(discover_router, prefix="/v1", tags=["discovery"])
 app.include_router(scores_router, prefix="/v1", tags=["scores"])
 app.include_router(badges_router, prefix="/v1", tags=["badges"])
 app.include_router(attestations_router, prefix="/v1", tags=["attestations"])
