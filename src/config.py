@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # JWT Attestation Signing (Ed25519)
     jwt_private_key_path: str = ""
     jwt_private_key: str = ""  # Base64-encoded key content (alternative to file path)
-    jwt_issuer: str = "did:web:agenttrust.assisterr.ai"
+    jwt_issuer: str = "did:web:laureum.ai"
     attestation_validity_days: int = 30
 
     # Payment — Receiver Wallet
@@ -139,6 +139,16 @@ class Settings(BaseSettings):
     enable_cpcr: bool = False
     cpcr_correct_threshold: int = 70  # matches judge rubric "correct result" band
 
+    # ── QO-053-F: Eval-hash version pins ─────────────────────────────────────
+    # Pinned version strings that are folded into ``compute_eval_hash`` (CB4).
+    # Bumping any of these constants forces full re-eval of every cached
+    # skill score. Use semver-ish strings so external consumers can range
+    # the cache invalidation when they upgrade.
+    question_pack_v: str = "qpack-v1.0"
+    probe_pack_v: str = "ppack-v1.0"
+    judge_models_pinned: str = "cerebras+groq+gemini-v1"
+    eval_settings_v: str = "evset-v1.0"
+
     # ── Skill Activation Adapter (QO-053-B) ──────────────────────────────────
     # Default provider per CB1 (DECISIONS.md): Cerebras free tier. Anthropic
     # Sonnet is opt-in via LAUREUM_ACTIVATION_PROVIDER=anthropic; system stays
@@ -152,25 +162,6 @@ class Settings(BaseSettings):
     cerebras_api_keys: str = ""
     # Anthropic Sonnet minimum cacheable prompt size (cache_control rejected below).
     anthropic_min_cacheable_tokens: int = 2048
-
-    # ── L3 Claude Code SDK Harness (QO-059) ──────────────────────────────────
-    # Pinned image SHAs for reproducibility (AC5). Bumping these requires
-    # validation against the 5-fixture suite (Spearman ρ ≥ 0.95) — see the
-    # rollback runbook in QO-059 spec. Renovate-bot PRs that bump
-    # claude-agent-sdk / @anthropic-ai/claude-code rebuild + re-pin via
-    # .github/workflows/build-l3-image.yml.
-    laureum_l3_docker_image_sha: str = ""  # e.g. "sha256:abc123..."
-    laureum_l3_docker_image_tag: str = "laureum-claude-code-runner:latest"
-    laureum_proxy_image_sha: str = ""  # egress-proxy sidecar (squid allowlist)
-    laureum_proxy_image_tag: str = "laureum-proxy:latest"
-    # Pre-flight cost ceiling per skill (AC4) — refuse to start if estimate exceeds.
-    laureum_l3_cost_ceiling_usd: float = 1.00
-    # Hard fail if SKILL.md body exceeds this (AC9 boundary, QO-053-A AC9).
-    laureum_l3_max_skill_body_bytes: int = 100_000
-    # Concurrency caps for batch L3 runs (AC7).
-    laureum_l3_concurrency: int = 3
-    # Skip Docker container cleanup for debugging (set LAUREUM_KEEP_DOCKER=1).
-    laureum_keep_docker: bool = False
 
     # ── GitHub OAuth (QO-046) ────────────────────────────────────────────────
     github_client_id: str = ""

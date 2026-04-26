@@ -269,14 +269,15 @@ class TestReset:
         assert fs.tool_calls_log == []
 
 
-# ── L3 dispatch guarantees (QO-059 superseded the stub) ─────────────────────
+# ── L3 stub guarantees ──────────────────────────────────────────────────────
 
 
-def test_l3_class_is_qo059_implementation():
-    """QO-059 replaced the stub — the import must resolve to the real harness."""
+def test_l3_stub_raises():
+    """L3 stub must NOT be importable from the activator module without raising."""
     from src.core.skill_activator import L3ClaudeCodeActivator
-    from src.core.l3_activator import L3ClaudeCodeActivator as RealL3
-    # Same class object (re-exported), not a stub anymore.
-    assert L3ClaudeCodeActivator is RealL3
-    # The real class no longer raises NotImplementedError on respond — see
-    # tests/test_l3_activator.py for the full QO-059 coverage.
+    stub = L3ClaudeCodeActivator()  # construction allowed for introspection
+    import asyncio as _asyncio
+    with pytest.raises(NotImplementedError, match="L3 ships in QO-059"):
+        _asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+            stub.respond("anything")
+        )

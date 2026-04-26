@@ -5,7 +5,7 @@ provider (AgentTrust's own card) and consumer (evaluated agent's card)
 per A2A v0.3 capabilities.extensions[] spec.
 """
 
-EXTENSION_URI = "https://agenttrust.assisterr.ai/ext/evaluation/v1"
+EXTENSION_URI = "https://laureum.ai/ext/evaluation/v1"
 
 
 def build_provider_extension_declaration() -> dict:
