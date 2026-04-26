@@ -1099,6 +1099,22 @@ async def _run_evaluation_skill(evaluation_id: str, request: EvaluateRequest):
         scores = eval_result.to_dict()
         scores["confidence"] = eval_result.confidence
 
+        target_id = f"urn:laureum:skill:{evaluation_id}"
+        target_name = (
+            getattr(parsed, "name", None) or
+            getattr(parsed, "folder_name", None) or
+            "uploaded-skill"
+        )
+        attestation_id = await _persist_completed_eval(
+            evaluation_id=evaluation_id,
+            target_id=target_id,
+            target_type=_TargetType.SKILL.value,
+            target_name=target_name,
+            request=request,
+            scores=scores,
+            duration_ms=eval_duration_ms,
+        )
+
         await evaluations_col().update_one(
             {"_id": evaluation_id},
             {"$set": {
@@ -1107,12 +1123,14 @@ async def _run_evaluation_skill(evaluation_id: str, request: EvaluateRequest):
                 "completed_at": datetime.utcnow(),
                 "progress_pct": 100,
                 "duration_ms": eval_duration_ms,
+                "target_id": target_id,
                 "target_type_dispatched": _TargetType.SKILL.value,
                 "subject_uri": eval_result.subject_uri,
                 "axis_weights_used": eval_result.axis_weights_used,
                 "delta_vs_baseline": eval_result.delta_vs_baseline,
                 "baseline_score": eval_result.baseline_score,
                 "baseline_status": eval_result.baseline_status,
+                "attestation_id": attestation_id,
             }},
         )
         logger.info(
@@ -1120,7 +1138,8 @@ async def _run_evaluation_skill(evaluation_id: str, request: EvaluateRequest):
             f"absolute={eval_result.overall_score} "
             f"baseline={eval_result.baseline_score} "
             f"delta={eval_result.delta_vs_baseline} "
-            f"tier={eval_result.tier}"
+            f"tier={eval_result.tier} "
+            f"attestation={attestation_id}"
         )
         # Touch the unused EvaluationDoc import so the linter sees the model
         # is wired into this module (also kept here for future schema use).
@@ -1182,6 +1201,88 @@ async def _deliver_webhook(
         logger.warning(f"Webhook delivery failed for {evaluation_id}: {e}")
 
 
+# ── Shared persistence helper for skill / A2A / REST runners ────────────────
+async def _persist_completed_eval(
+    *,
+    evaluation_id: str,
+    target_id: str,
+    target_type: str,
+    target_name: str,
+    request: EvaluateRequest,
+    scores: dict,
+    duration_ms: int,
+) -> str | None:
+    """Persist evaluation completion to scores_col + score_history + attestations.
+
+    Mirrors what _run_evaluation_mcp does for MCP servers so skill / A2A / REST
+    chat evals also produce a scoreboard entry, history row, and AQVC
+    credential. Returns the attestation_id (or None if creation fails).
+    """
+    now = datetime.utcnow()
+    overall_score = int(scores.get("overall_score", 0) or 0)
+    tier = scores.get("tier", "failed")
+    confidence = scores.get("confidence", 0)
+    attestation_id: str | None = None
+
+    try:
+        attestation = create_attestation(
+            target_id=target_id,
+            target_type=target_type,
+            target_name=target_name,
+            evaluation_result=scores,
+            evaluation_version=EVALUATION_VERSION,
+            eval_mode=request.eval_mode.value,
+        )
+        attestation_id = attestation["_id"]
+        from src.storage.mongodb import attestations_col
+        await attestations_col().insert_one(attestation)
+    except Exception as exc:  # noqa: BLE001 — non-fatal: still persist score
+        logger.warning(f"[{evaluation_id[:8]}] attestation creation failed: {exc}")
+
+    try:
+        await scores_col().update_one(
+            {"target_id": target_id},
+            {
+                "$set": {
+                    "target_id": target_id,
+                    "target_type": target_type,
+                    "current_score": overall_score,
+                    "tier": tier,
+                    "confidence": confidence,
+                    "evaluation_version": EVALUATION_VERSION,
+                    "last_evaluated_at": now,
+                    "last_evaluation_id": evaluation_id,
+                    "duration_ms": duration_ms,
+                    "last_eval_mode": request.eval_mode.value,
+                    "dimensions": scores.get("dimensions", {}),
+                    "safety_report": scores.get("safety_report") or scores.get("safety", {}),
+                    "subject_uri": scores.get("subject_uri") or target_id,
+                    "axis_weights_used": scores.get("axis_weights_used"),
+                },
+                "$inc": {"evaluation_count": 1},
+                "$setOnInsert": {"first_evaluated_at": now},
+            },
+            upsert=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{evaluation_id[:8]}] scores_col upsert failed: {exc}")
+
+    try:
+        await score_history_col().insert_one({
+            "target_id": target_id,
+            "target_type": target_type,
+            "score": overall_score,
+            "tier": tier,
+            "evaluation_id": evaluation_id,
+            "evaluation_version": EVALUATION_VERSION,
+            "recorded_at": now,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{evaluation_id[:8]}] score_history insert failed: {exc}")
+
+    return attestation_id
+
+
 # ── QO-058 generic-agent runners ─────────────────────────────────────────────
 
 
@@ -1196,6 +1297,7 @@ async def _run_evaluation_a2a(evaluation_id: str, request: EvaluateRequest):
     import time as _time
     from src.core.target_resolver import resolve as resolve_target
     from src.core.a2a_target import A2ATarget
+    from src.storage.models import TargetType as _TargetType
 
     eval_start = _time.time()
     try:
@@ -1223,15 +1325,30 @@ async def _run_evaluation_a2a(evaluation_id: str, request: EvaluateRequest):
 
         result = await evaluator.evaluate_a2a(target)
         duration_ms = int((_time.time() - eval_start) * 1000)
+        scores = result.to_dict()
+
+        target_id = request.target_url
+        target_name = getattr(target, "name", None) or request.target_url
+        attestation_id = await _persist_completed_eval(
+            evaluation_id=evaluation_id,
+            target_id=target_id,
+            target_type=_TargetType.A2A_AGENT.value,
+            target_name=target_name,
+            request=request,
+            scores=scores,
+            duration_ms=duration_ms,
+        )
 
         await evaluations_col().update_one(
             {"_id": evaluation_id},
             {"$set": {
                 "status": EvalStatus.COMPLETED.value,
                 "progress_pct": 100,
-                "scores": result.to_dict(),
+                "scores": scores,
                 "duration_ms": duration_ms,
+                "target_id": target_id,
                 "target_type_dispatched": result.target_type_dispatched.value if result.target_type_dispatched else None,
+                "attestation_id": attestation_id,
             }},
         )
     except Exception as e:
@@ -1255,6 +1372,7 @@ async def _run_evaluation_rest_chat(evaluation_id: str, request: EvaluateRequest
     """
     import time as _time
     from src.core.rest_chat_target import RESTChatTarget
+    from src.storage.models import TargetType as _TargetType
 
     eval_start = _time.time()
     try:
@@ -1275,20 +1393,34 @@ async def _run_evaluation_rest_chat(evaluation_id: str, request: EvaluateRequest
         target = RESTChatTarget(endpoint_url=request.target_url, judge=judge)
         result = await evaluator.evaluate_rest_chat(target)
         duration_ms = int((_time.time() - eval_start) * 1000)
+        scores = result.to_dict()
 
         # AC11 surface: tier=failed → propagate the error_type for clean
         # error UX without overloading the success path.
         update: dict = {
             "status": EvalStatus.COMPLETED.value,
             "progress_pct": 100,
-            "scores": result.to_dict(),
+            "scores": scores,
             "duration_ms": duration_ms,
+            "target_id": request.target_url,
             "target_type_dispatched": (
                 result.target_type_dispatched.value
                 if result.target_type_dispatched else None
             ),
         }
-        if result.tier == "failed" and result.style_report and result.style_report.get("error_type") == "schema_unobtainable":
+        # Only persist + attest on real success (not schema_unobtainable failure).
+        if not (result.tier == "failed" and result.style_report and result.style_report.get("error_type") == "schema_unobtainable"):
+            attestation_id = await _persist_completed_eval(
+                evaluation_id=evaluation_id,
+                target_id=request.target_url,
+                target_type=_TargetType.REST_CHAT.value,
+                target_name=request.target_url,
+                request=request,
+                scores=scores,
+                duration_ms=duration_ms,
+            )
+            update["attestation_id"] = attestation_id
+        else:
             update["status"] = EvalStatus.FAILED.value
             update["error"] = result.style_report.get("error", "Schema inference refused this target")
             update["error_type"] = "schema_unobtainable"
