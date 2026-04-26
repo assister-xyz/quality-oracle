@@ -620,3 +620,114 @@ class AntiPattern(BaseModel):
     regex_match: Optional[str] = None
     message: str
     suggestion: str = ""
+
+
+# ── Skill Activation Adapter (QO-053-B) ──────────────────────────────────────
+
+
+class ToolCall(BaseModel):
+    """One tool invocation recorded during an L2/L3 activation turn.
+
+    The activator's MockFileSystem (and, later, the QO-059 Docker harness)
+    record every tool the activated agent attempts to call. Downstream probes
+    in QO-053-D/E inspect this log to detect script poisoning, fee-payer
+    hijack, and other tool-trace anomalies.
+    """
+    tool: str  # Read | Bash | Glob | Grep | Edit | Write
+    args: Dict[str, Any] = Field(default_factory=dict)
+    returned: Optional[str] = None
+    error: Optional[str] = None
+    blocked: bool = False  # True when path-escape / network access denied
+    duration_ms: int = 0
+
+
+class UsageSummary(BaseModel):
+    """Aggregate token + cost summary across an activation session.
+
+    Mirrors the structure consumed by QO-051 CPCR aggregator. ``dollars_spent``
+    is computed at the activator using ``calculate_cost`` so that free-tier
+    runs honestly report ``0.0`` and the shadow-cost path is computed by
+    callers from raw token counts.
+    """
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    dollars_spent: float = 0.0
+    model: str = ""
+    provider: str = ""
+    request_ids: List[str] = Field(default_factory=list)
+    n_calls: int = 0
+
+
+class ActivationResponse(BaseModel):
+    """Single ``respond()`` call return value for any SkillActivatedAgent.
+
+    Mirrors the public contract used by the evaluator dispatch in
+    QO-053-C; ``parse_warnings`` surfaces both bash-preprocessor strips and
+    cache-disabled-below-min-tokens (AC9) so audit can see why the per-call
+    cost spiked.
+    """
+    text: str
+    tool_calls: List[ToolCall] = Field(default_factory=list)
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model: str
+    provider: str = ""
+    request_id: str = ""
+    latency_ms: int = 0
+    parse_warnings: List[str] = Field(default_factory=list)
+
+
+class ActivationFailure(Exception):
+    """Raised when an activation provider exhausts retries.
+
+    Attributes
+    ----------
+    last_request_id:
+        Provider-side request ID from the final attempt — propagated to the
+        DLQ entry so engineers can grep provider logs without replaying the
+        whole eval.
+    provider:
+        ``cerebras`` / ``groq`` / ``anthropic``.
+    attempt_count:
+        Total attempts made (1 + retries).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        last_request_id: str = "",
+        provider: str = "",
+        attempt_count: int = 0,
+    ):
+        super().__init__(message)
+        self.last_request_id = last_request_id
+        self.provider = provider
+        self.attempt_count = attempt_count
+
+
+class ModelVersionRecord(BaseModel):
+    """Persisted (alias, dated_snapshot, resolved_at) row for AQVC reproducibility.
+
+    See AC4. Stored in ``quality__model_versions``; one document per provider
+    (``alias`` is unique per provider so a re-resolve overwrites in place).
+    """
+    provider: str
+    alias: str  # e.g. ``claude-sonnet-4-5`` or ``llama3.1-8b``
+    dated_snapshot: str  # e.g. ``claude-sonnet-4-5-20250929``
+    resolved_at: datetime = Field(default_factory=datetime.utcnow)
+    source: str = "list_models"  # ``list_models`` (Anthropic) or ``fixed`` (Cerebras/Groq)
+
+
+class ActivationDLQEntry(BaseModel):
+    """Dead-letter queue entry written when a call fails permanently (AC8)."""
+    skill_id: Optional[str] = None
+    question_id: Optional[str] = None
+    last_request_id: str = ""
+    provider: str = ""
+    error_class: str = ""
+    error_message: str = ""
+    attempt_count: int = 0
