@@ -170,7 +170,7 @@
 ```json
 {
   "type": "AgentQualityVerifiableCredential",
-  "issuer": "did:web:agenttrust.assisterr.ai",
+  "issuer": "did:web:laureum.ai",
   "subject": "mcp://server-url",
   "quality": {
     "composite_score": 82,

@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # JWT Attestation Signing (Ed25519)
     jwt_private_key_path: str = ""
     jwt_private_key: str = ""  # Base64-encoded key content (alternative to file path)
-    jwt_issuer: str = "did:web:agenttrust.assisterr.ai"
+    jwt_issuer: str = "did:web:laureum.ai"
     attestation_validity_days: int = 30
 
     # Payment — Receiver Wallet
