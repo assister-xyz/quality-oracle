@@ -65,6 +65,46 @@ async def _maybe_await(value):
     return value
 
 
+# Tokens that imply the skill is Solana-domain — used by ``evaluate_skill``
+# to gate the SOL-* probe pack. Conservative: any of these in the parsed
+# name, description, or frontmatter metadata flips the skill to Solana.
+_SOLANA_TOKENS = (
+    "solana", "spl-token", "anchor", "@solana/", "solana-program",
+    "phantom", "helius", "quicknode", "metaplex", "raydium", "jupiter",
+    "meteora", "pumpfun", "drift", "squads", "@solana/web3.js",
+    "@solana/kit",
+)
+
+
+def _is_solana_skill(parsed) -> bool:
+    """Return True iff the parsed skill metadata signals Solana-domain.
+
+    Checks (in order, cheap → expensive): folder name, declared name,
+    description, frontmatter metadata, and finally a sniff of the body
+    for a Solana import. The body sniff is bounded to avoid scanning
+    huge skill bodies — first 4KB is plenty to catch any import.
+    """
+    try:
+        haystack_parts: list[str] = []
+        for attr in ("folder_name", "name", "description"):
+            v = getattr(parsed, attr, None)
+            if v:
+                haystack_parts.append(str(v))
+        meta = getattr(parsed, "metadata", None) or {}
+        for k, v in meta.items():
+            haystack_parts.append(f"{k}={v}")
+        body = getattr(parsed, "body", "") or ""
+        if body:
+            haystack_parts.append(body[:4096])
+        haystack = " ".join(haystack_parts).lower()
+        for tok in _SOLANA_TOKENS:
+            if tok in haystack:
+                return True
+    except Exception:  # pragma: no cover - defensive
+        return False
+    return False
+
+
 def compute_skill_tier(
     absolute: float,
     delta: Optional[float],
@@ -111,6 +151,8 @@ def compute_skill_tier(
     if delta is None or delta < 10 or absolute < 65:
         return "verified"
     if absolute < 75:
+        # bronze cap stands; HIGH probe fail still caps at silver-or-below
+        # (i.e. cannot upgrade out of bronze).
         return "bronze"
     if absolute < 85:
         return "silver"
@@ -222,6 +264,13 @@ class EvaluationResult(BaseModel):
     subject_uri: Optional[str] = None
     spec_compliance: Optional[Dict[str, Any]] = None  # serialised SpecCompliance for skills
 
+    # ── QO-053-D: Solana adversarial probe pack ──────────────────────────────
+    # Populated by ``evaluate_skill`` when the skill is Solana-tagged. Fields
+    # stay None for non-Solana skills and legacy MCP evaluations so AC9 (byte-
+    # identical regression) is preserved.
+    solana_probes: Optional[List[Dict[str, Any]]] = None
+    solana_safety_deduction: Optional[int] = None  # negative integer applied to safety_score
+
     def compute_cpcr(self, correct_threshold: int = 70) -> Dict[str, Any]:
         """Compute the three CPCR variants from judge_responses + cost data.
 
@@ -327,6 +376,10 @@ class EvaluationResult(BaseModel):
             d["subject_uri"] = self.subject_uri
         if self.spec_compliance is not None:
             d["spec_compliance"] = self.spec_compliance
+        if self.solana_probes is not None:
+            d["solana_probes"] = self.solana_probes
+        if self.solana_safety_deduction is not None:
+            d["solana_safety_deduction"] = self.solana_safety_deduction
         return d
 
 
@@ -1409,12 +1462,108 @@ class Evaluator:
                 baseline_status = "failed"
         result.baseline_status = baseline_status
 
-        # Tier gate (R7 §9 + AC5 + AC10).
+        # ── QO-053-D + QO-053-E: combined adversarial probe pack ───────
+        # We run BOTH probe runners and aggregate their HIGH-severity
+        # FAIL signal for the L3 tier gate. D contributes Solana-specific
+        # static + LLM probes (only for solana skills); E contributes the
+        # generic 3-phase skill probe pack (deterministic + LLM + private).
+        # Conflict-resolution note: D and E both extended evaluate_skill(),
+        # E adopted D's probe_result.py module so they aggregate cleanly.
+        _has_high_probe_fail = False
+
+        # ── QO-053-D: Solana-domain adversarial probe pack ─────────────────
+        # Static probes always run (zero cost). LLM probes only when an
+        # activator and a judge_fn are present.
+        try:
+            from src.core.solana_probes import SolanaProbeRunner
+            from src.core.probe_result import aggregate_safety_deductions as _agg_solana
+            from pathlib import Path as _Path
+
+            if _is_solana_skill(parsed):
+                runner = SolanaProbeRunner()
+                dir_path = _Path(getattr(target, "subject_uri", "") or "")
+                if not dir_path.is_dir():
+                    dir_path = None  # type: ignore[assignment]
+                probes: list = list(runner.run_static_probes(parsed, dir_path))  # type: ignore[arg-type]
+                if activator_factory is not None and runner.judge_fn is not None:
+                    try:
+                        skill_agent = await _maybe_await(activator_factory())
+                        probes.extend(await runner.run_llm_probes(skill_agent))
+                    except Exception as _exc:  # noqa: BLE001
+                        logger.warning("Solana LLM probes failed: %s", _exc)
+                else:
+                    probes.extend(await runner.run_llm_probes(skill_agent=None))  # type: ignore[arg-type]
+                result.solana_probes = [p.model_dump() for p in probes]
+                result.solana_safety_deduction = _agg_solana(probes)
+                # Aggregate any HIGH-severity Solana probe FAIL into the
+                # tier-gate flag so L3 tier can cap at silver (QO-053-E AC9).
+                for p in result.solana_probes:
+                    if p.get("outcome") == "fail" and p.get("severity") == "high":
+                        _has_high_probe_fail = True
+                        break
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.warning("Solana probe pack failed (non-fatal): %s", _exc)
+
+        # ── QO-053-E generic SKILL-* adversarial probe pack ────────────────
+        # Phase 0 (deterministic) always runs: $0, ≤1s. Phase 1 (LLM judges)
+        # runs only when an activator is present AND ``level >= FUNCTIONAL``.
+        # Phase 2 is PRIVATE (M5) and only at ``DOMAIN_EXPERT``.
+        probe_results: List[Any] = []
+        try:
+            from pathlib import Path as _Path
+            from src.core.skill_probes import SkillProbeRunner
+            from src.core.probe_result import (
+                aggregate_safety_deductions,
+                Outcome as _ProbeOutcome,
+            )
+            from src.storage.models import Severity as _Severity
+
+            probe_runner = SkillProbeRunner(judge_fn=ajudge_rubric)
+            dir_path = _Path(getattr(target, "skill_dir", "")) if getattr(target, "skill_dir", None) else None
+            phase0 = await probe_runner.run_phase_0(parsed, dir_path)
+            probe_results.extend(phase0)
+            if activator_factory is not None and level >= _EvalLevel.FUNCTIONAL:
+                try:
+                    probe_activator = await _maybe_await(activator_factory())
+                    phase1 = await probe_runner.run_phase_1(probe_activator)
+                    probe_results.extend(phase1)
+                    if level >= _EvalLevel.DOMAIN_EXPERT:
+                        phase2 = await probe_runner.run_phase_2(probe_activator)
+                        probe_results.extend(phase2)
+                except Exception as _exc:  # noqa: BLE001
+                    logger.warning("Phase-1/2 probe activation failed: %s", _exc)
+            # Persist + aggregate.
+            result.probe_results = [
+                p.model_dump(mode="json") if hasattr(p, "model_dump") else dict(p)
+                for p in probe_results
+            ]
+            result.owasp_coverage = SkillProbeRunner.owasp_coverage(probe_results)
+            _skill_high_fail = SkillProbeRunner.has_high_severity_fail(probe_results)
+            result.has_high_severity_probe_fail = _skill_high_fail
+            # OR with Solana flag — either probe-pack's HIGH fail trips gate.
+            _has_high_probe_fail = _has_high_probe_fail or _skill_high_fail
+            deduction = aggregate_safety_deductions(probe_results)
+            skill_safety_score = max(0, min(100, 100 + deduction))
+            result.safety_report = {
+                **(result.safety_report or {}),
+                "skill_probe_score": skill_safety_score,
+                "skill_probe_deduction": deduction,
+                "skill_probe_count": len(probe_results),
+                "skill_probe_high_severity_fails": [
+                    p.id for p in probe_results
+                    if p.outcome == _ProbeOutcome.FAIL and p.severity == _Severity.HIGH
+                ],
+            }
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.warning("Skill probe pack failed (non-fatal): %s", _exc)
+
+        # Tier gate (R7 §9 + AC5 + AC10 + QO-053-E AC9).
         result.tier = compute_skill_tier(
             absolute=absolute,
             delta=result.delta_vs_baseline,
             level=level,
             baseline_status=baseline_status,
+            has_high_probe_fail=_has_high_probe_fail,
         )
 
         # Confidence — sample size + spec compliance modulator.
@@ -1444,5 +1593,233 @@ class Evaluator:
             result.baseline_score,
             result.delta_vs_baseline,
             result.tier,
+        )
+        return result
+
+    # ── QO-058: generic agent evaluation ────────────────────────────────────
+
+    async def evaluate_a2a(
+        self,
+        target,
+        *,
+        questions=None,
+        capability_id: Optional[str] = None,
+    ) -> "EvaluationResult":
+        """Evaluate an A2A agent target.
+
+        Sends each question via :meth:`A2ATarget.invoke`, judges the
+        response with ``self.llm_judge.ajudge``, and returns an
+        :class:`EvaluationResult` populated with overall_score, axis weights
+        (manifest-aware DEFAULT_WEIGHTS), and provenance.
+
+        Parameters
+        ----------
+        target:
+            Anything satisfying :class:`EvaluationTarget` — typically
+            :class:`A2ATarget`. Must have ``discover()`` already called OR
+            be ready to discover lazily.
+        questions:
+            Optional iterable of objects with ``.text`` (and ideally
+            ``.expected``). When None, uses the QuestionSelector default
+            sample for the L2 functional level.
+        capability_id:
+            Skill/capability id to invoke. When None, picks the first
+            capability returned by :meth:`list_capabilities`.
+
+        Returns
+        -------
+        :class:`EvaluationResult`
+            With ``target_type_dispatched=A2A_AGENT``, ``axis_weights_used``
+            from :func:`axis_weights.get_weights`, ``judge_responses``
+            populated, and a tier from :func:`question_pools.determine_tier`.
+        """
+        from src.core.axis_weights import get_weights
+        from src.storage.models import TargetType as _TargetType
+
+        start = time.time()
+        result = EvaluationResult()
+        result.target_type_dispatched = _TargetType.A2A_AGENT
+        result.subject_uri = getattr(target, "endpoint_url", "")
+
+        # Discover + capability selection
+        manifest = await target.discover()
+        result.axis_weights_used = get_weights(
+            _TargetType.A2A_AGENT, has_manifest=True
+        )
+        capabilities = await target.list_capabilities()
+        if not capabilities:
+            raise ValueError("evaluate_a2a: target has no capabilities")
+        cap_id = capability_id or capabilities[0].id
+
+        # Default question set — one per capability (small probe; the
+        # full domain expert L3 is QO-068 territory).
+        if questions is None:
+            qs = list(self.question_selector.sample("general", n=10))
+        else:
+            qs = list(questions)
+        result.questions_asked = len(qs)
+
+        scores: List[int] = []
+        for q in qs:
+            text = getattr(q, "text", str(q))
+            expected = getattr(q, "expected", "") or getattr(q, "answer", "")
+            try:
+                inv = await target.invoke(cap_id, {"message": text})
+                ans = inv.text
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("a2a invoke failed: %s", exc)
+                ans = ""
+            jr = await self.llm_judge.ajudge(text, expected, ans)
+            score = int(getattr(jr, "score", 0))
+            scores.append(score)
+            result.judge_responses.append(
+                {"question": text, "score": score, "answer": ans}
+            )
+        result.overall_score = int(sum(scores) / len(scores)) if scores else 0
+        result.questions_answered = sum(1 for s in scores if s > 0)
+        result.tier = determine_tier(result.overall_score)
+        result.confidence = round(min(0.95, len(scores) / 30), 2) if scores else 0.0
+        result.duration_ms = int((time.time() - start) * 1000)
+        hash_data = (
+            f"{result.subject_uri}:{result.overall_score}:"
+            f"{result.questions_asked}:{int(time.time())}"
+        )
+        result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
+        try:
+            tu = self.collect_token_usage()
+            result.token_usage = tu
+            result.cost_usd = tu.get("cost_usd", 0.0)
+            result.shadow_cost_usd = tu.get("shadow_cost_usd", 0.0)
+            _maybe_compute_cpcr(result)
+        except Exception:  # pragma: no cover
+            pass
+        # Carry provenance to result for downstream audit.
+        try:
+            result.style_report = {
+                "provenance": target.get_provenance(),
+                "manifest_id": manifest.id,
+            }
+        except Exception:  # pragma: no cover
+            pass
+        logger.info(
+            "A2A evaluation: target=%s score=%d tier=%s",
+            result.subject_uri, result.overall_score, result.tier,
+        )
+        return result
+
+    async def evaluate_rest_chat(
+        self,
+        target,
+        *,
+        questions=None,
+    ) -> "EvaluationResult":
+        """Evaluate a manifest-less REST-chat target.
+
+        Differs from :meth:`evaluate_a2a` in three ways (per spec §"REST
+        chat target"):
+
+        1. Axis weights = :data:`MANIFEST_LESS_WEIGHTS` (latency &
+           schema_quality zeroed, accuracy/safety up-weighted).
+        2. Tier capped at "verified" regardless of score (AC7) — UNLESS
+           ``manifest.confidence == "high"`` (operator escalated via
+           OpenAPI doc or n=10 calibration + correlation rows).
+        3. ``discover()`` may raise :class:`SchemaUnobtainableError`
+           which we catch and return ``tier="failed"``,
+           ``error_type="schema_unobtainable"`` (AC11).
+        """
+        from src.core.axis_weights import get_weights
+        from src.core.evaluation_target import SchemaUnobtainableError
+        from src.storage.models import TargetType as _TargetType
+
+        start = time.time()
+        result = EvaluationResult()
+        result.target_type_dispatched = _TargetType.REST_CHAT
+        result.subject_uri = getattr(target, "endpoint_url", "")
+        result.axis_weights_used = get_weights(
+            _TargetType.REST_CHAT, has_manifest=False
+        )
+
+        try:
+            manifest = await target.discover()
+        except SchemaUnobtainableError as exc:
+            result.tier = "failed"
+            result.overall_score = 0
+            result.confidence = 0.0
+            result.duration_ms = int((time.time() - start) * 1000)
+            result.style_report = {
+                "error": str(exc), "error_type": "schema_unobtainable",
+                "provenance": target.get_provenance() if hasattr(target, "get_provenance") else {},
+            }
+            logger.warning("REST chat eval refused (schema unobtainable): %s", exc)
+            return result
+
+        if questions is None:
+            qs = list(self.question_selector.sample("general", n=10))
+        else:
+            qs = list(questions)
+        result.questions_asked = len(qs)
+
+        scores: List[int] = []
+        for q in qs:
+            text = getattr(q, "text", str(q))
+            expected = getattr(q, "expected", "") or getattr(q, "answer", "")
+            try:
+                inv = await target.invoke("chat", {"message": text})
+                ans = inv.text
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("rest_chat invoke failed: %s", exc)
+                ans = ""
+            jr = await self.llm_judge.ajudge(text, expected, ans)
+            score = int(getattr(jr, "score", 0))
+            scores.append(score)
+            result.judge_responses.append(
+                {"question": text, "score": score, "answer": ans}
+            )
+
+        result.overall_score = int(sum(scores) / len(scores)) if scores else 0
+        result.questions_answered = sum(1 for s in scores if s > 0)
+
+        # AC7 — Verified-tier cap unless inference confidence escalated.
+        baseline_tier = determine_tier(result.overall_score)
+        if manifest.confidence == "high":
+            result.tier = baseline_tier
+        else:
+            # Cap at verified — never proficient/expert without a manifest.
+            if baseline_tier in ("expert", "proficient"):
+                result.tier = "verified"  # type: ignore[assignment]
+            elif baseline_tier == "basic":
+                result.tier = "basic"
+            else:
+                result.tier = baseline_tier
+
+        result.confidence = round(min(0.85, len(scores) / 30), 2) if scores else 0.0
+        result.duration_ms = int((time.time() - start) * 1000)
+        hash_data = (
+            f"{result.subject_uri}:{result.overall_score}:"
+            f"{result.questions_asked}:{int(time.time())}"
+        )
+        result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
+        try:
+            tu = self.collect_token_usage()
+            result.token_usage = tu
+            result.cost_usd = tu.get("cost_usd", 0.0)
+            result.shadow_cost_usd = tu.get("shadow_cost_usd", 0.0)
+            _maybe_compute_cpcr(result)
+        except Exception:  # pragma: no cover
+            pass
+        try:
+            result.style_report = {
+                "provenance": target.get_provenance(),
+                "tier_cap_reason": (
+                    None if manifest.confidence == "high" else "no_manifest"
+                ),
+                "inference_confidence": manifest.confidence,
+            }
+        except Exception:  # pragma: no cover
+            pass
+        logger.info(
+            "REST chat evaluation: target=%s score=%d tier=%s confidence=%s",
+            result.subject_uri, result.overall_score, result.tier,
+            manifest.confidence,
         )
         return result
