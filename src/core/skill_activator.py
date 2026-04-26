@@ -753,25 +753,25 @@ class L2ToolUseActivator(SkillActivatedAgent):
         )
 
 
-# ── L3: stub ────────────────────────────────────────────────────────────────
+# ── L3: Docker harness ──────────────────────────────────────────────────────
+#
+# QO-059 ships the real audited-tier activator in :mod:`src.core.l3_activator`.
+# We re-export here so the dispatcher in QO-053-C / QO-058 can keep importing
+# ``L3ClaudeCodeActivator`` from this module (preserves the QO-053-B contract).
+#
+# We use module-level ``__getattr__`` to break the circular import — the L3
+# module imports ``SkillActivatedAgent`` from this file, and now this file
+# wants to re-export ``L3ClaudeCodeActivator``. Lazy-loading via ``__getattr__``
+# defers the L3 module import until first attribute access, by which time the
+# parent module is fully initialised.
 
 
-class L3ClaudeCodeActivator(SkillActivatedAgent):
-    """Stub. The audited tier ships in QO-059 (Docker harness)."""
-
-    def __init__(self, *args, **kwargs):  # noqa: D401 - stub
-        # Allow construction so the dispatcher can introspect the class.
-        if args or kwargs:
-            super().__init__(*args, **kwargs)
-
-    async def respond(self, question: str) -> ActivationResponse:
-        raise NotImplementedError("L3 ships in QO-059")
-
-    def usage_summary(self) -> UsageSummary:
-        raise NotImplementedError("L3 ships in QO-059")
-
-    def reset(self) -> None:
-        raise NotImplementedError("L3 ships in QO-059")
+def __getattr__(name: str):
+    if name == "L3ClaudeCodeActivator":
+        from src.core.l3_activator import L3ClaudeCodeActivator as _L3
+        globals()["L3ClaudeCodeActivator"] = _L3
+        return _L3
+    raise AttributeError(f"module 'src.core.skill_activator' has no attribute {name!r}")
 
 
 # ── Factory ─────────────────────────────────────────────────────────────────
