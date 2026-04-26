@@ -1654,7 +1654,11 @@ class Evaluator:
         # Default question set — one per capability (small probe; the
         # full domain expert L3 is QO-068 territory).
         if questions is None:
-            qs = list(self.question_selector.sample("general", n=10))
+            qs = list(self.question_selector.select_questions(
+                target_id=getattr(target, "endpoint_url", "agent"),
+                domains=["general"],
+                count=10,
+            ))
         else:
             qs = list(questions)
         result.questions_asked = len(qs)
@@ -1754,7 +1758,11 @@ class Evaluator:
             return result
 
         if questions is None:
-            qs = list(self.question_selector.sample("general", n=10))
+            qs = list(self.question_selector.select_questions(
+                target_id=getattr(target, "endpoint_url", "agent"),
+                domains=["general"],
+                count=10,
+            ))
         else:
             qs = list(questions)
         result.questions_asked = len(qs)
