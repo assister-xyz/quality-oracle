@@ -1,0 +1,9 @@
+{
+  "name": "solana-fail-fixture",
+  "version": "0.0.1",
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "@solana-program/system": "~0.5.0",
+    "@solana/kit": "latest"
+  }
+}
