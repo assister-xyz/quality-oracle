@@ -1,0 +1,456 @@
+{
+  "domain": "solana",
+  "description": "Solana skill activated-agent question bank for QO-053-D L2/L3 scoring (separate from SOL-* adversarial probes).",
+  "questions": [
+    {
+      "id": "sol-q-001",
+      "question": "Build a SOL transfer transaction from one wallet to another using @solana/web3.js v2.",
+      "expected_behavior": "Show a TransactionMessage with SystemProgram.transfer, signed and sent via a Helius/QuickNode RPC; warn about lamports vs SOL.",
+      "difficulty": "easy",
+      "scoring_rubric": "Correct API usage (4pts), units handled (3pts), explicit RPC mentioned (3pts).",
+      "variants": ["How do I transfer SOL?", "Code a wallet-to-wallet SOL transfer."],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-002",
+      "question": "How do I derive an associated token account for a given owner + mint?",
+      "expected_behavior": "Use getAssociatedTokenAddress / findAssociatedTokenPda; correct seed derivation.",
+      "difficulty": "easy",
+      "scoring_rubric": "Correct seeds (4pts), correct program ID (3pts), idempotent creation noted (3pts).",
+      "variants": ["Derive an ATA in @solana/kit", "Find ATA seeds"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-003",
+      "question": "Write a Solana program client call that creates an SPL token mint.",
+      "expected_behavior": "createMint with decimals + initialSupply 0; mintAuthority and freezeAuthority distinct.",
+      "difficulty": "medium",
+      "scoring_rubric": "Correct decimals (3pts), authority separation (4pts), error handling (3pts).",
+      "variants": ["Mint a new SPL token", "Create a token via @solana/spl-token"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-004",
+      "question": "Sign and send a versioned transaction including a compute-budget priority fee.",
+      "expected_behavior": "ComputeBudgetProgram.setComputeUnitPrice with reasonable microLamports (<= 100k); signed via wallet adapter.",
+      "difficulty": "medium",
+      "scoring_rubric": "Reasonable microLamports value (4pts), versioned tx structure correct (3pts), broadcast path (3pts).",
+      "variants": ["Add a priority fee to my tx", "Use ComputeBudgetProgram correctly"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-005",
+      "question": "Implement a Pyth price-feed read with staleness check.",
+      "expected_behavior": "Use getPriceNoOlderThan(60) or similar; reject stale price.",
+      "difficulty": "medium",
+      "scoring_rubric": "Staleness check present (5pts), correct feed ID (3pts), error handling (2pts).",
+      "variants": ["Read a Pyth feed safely", "How to avoid stale oracle prices"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-006",
+      "question": "How do I check whether a token mint is verified on Jupiter Verify v3?",
+      "expected_behavior": "Call Jupiter Verify v3 endpoint, check 'verified' boolean, fail-closed when unverified.",
+      "difficulty": "medium",
+      "scoring_rubric": "Endpoint usage (4pts), fail-closed handling (3pts), Phantom blocklist mention (3pts).",
+      "variants": ["Detect a rug-pull token", "Verify a mint before swapping"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-007",
+      "question": "What is a durable nonce and when should it be used?",
+      "expected_behavior": "Explain offline-signing use case; explicitly warn about nonceAdvance + setAuthority Drift vector.",
+      "difficulty": "hard",
+      "scoring_rubric": "Use-case explanation (3pts), Drift vector warning (5pts), citations (2pts).",
+      "variants": ["When should I use a durable nonce?", "Explain Solana durable nonces"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-008",
+      "question": "Build a Squads multisig admin transfer with a 24h delay.",
+      "expected_behavior": "Use Squads SDK with proper threshold; 24h delay enforced; hardware-signed.",
+      "difficulty": "hard",
+      "scoring_rubric": "Multisig setup (3pts), delay enforced (4pts), hardware signing recommended (3pts).",
+      "variants": ["Multisig admin transfer", "Schedule a Squads admin change"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-009",
+      "question": "Show me how to swap SOL → USDC via Jupiter v6.",
+      "expected_behavior": "Call /quote then /swap; sign + send; verify slippage; verify mint pre-swap.",
+      "difficulty": "easy",
+      "scoring_rubric": "Quote+swap pattern (4pts), slippage handling (3pts), verify mint (3pts).",
+      "variants": ["Use Jupiter API for a swap", "Swap tokens with Jupiter"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-010",
+      "question": "How do I subscribe to account changes via WebSocket?",
+      "expected_behavior": "Use Connection.onAccountChange with a Helius/QuickNode RPC; cleanup on dispose.",
+      "difficulty": "easy",
+      "scoring_rubric": "Subscription pattern (4pts), cleanup (3pts), trusted RPC (3pts).",
+      "variants": ["WebSocket subscription Solana", "Listen for account changes"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-011",
+      "question": "Verify a wallet signature for off-chain authentication.",
+      "expected_behavior": "Use nacl.sign.detached.verify or @solana/kit verifySignature; nonce + domain.",
+      "difficulty": "medium",
+      "scoring_rubric": "Verify signature (4pts), nonce/replay protection (3pts), domain separation (3pts).",
+      "variants": ["Sign-in with Solana", "Verify a Solana signature"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-012",
+      "question": "Read an Anchor program's account state.",
+      "expected_behavior": "Generate IDL types; use program.account.X.fetch with proper PDA derivation.",
+      "difficulty": "medium",
+      "scoring_rubric": "Anchor types (4pts), PDA correctness (3pts), error handling (3pts).",
+      "variants": ["Fetch Anchor account", "Decode IDL state"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-013",
+      "question": "How do I close an SPL token account and reclaim rent?",
+      "expected_behavior": "createCloseAccountInstruction; verify owner; reclaim rent to specified destination.",
+      "difficulty": "easy",
+      "scoring_rubric": "Correct API (4pts), owner verification (3pts), destination (3pts).",
+      "variants": ["Close an SPL account", "Reclaim ATA rent"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-014",
+      "question": "Burn 100 tokens from a holder's account.",
+      "expected_behavior": "Use createBurnInstruction; verify mint decimals; signed by owner.",
+      "difficulty": "easy",
+      "scoring_rubric": "Decimals handled (4pts), authority correct (3pts), API used right (3pts).",
+      "variants": ["Burn SPL tokens", "Reduce token supply"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-015",
+      "question": "How do I make a transaction idempotent against duplicate broadcast?",
+      "expected_behavior": "Use recentBlockhash + lastValidBlockHeight or durable nonce; deduplicate by signature.",
+      "difficulty": "medium",
+      "scoring_rubric": "Blockhash strategy (4pts), dedup logic (3pts), explanation quality (3pts).",
+      "variants": ["Avoid double-spend", "Idempotent Solana tx"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-016",
+      "question": "Explain Solana's account model vs Ethereum.",
+      "expected_behavior": "Programs are stateless; data lives in accounts; rent + sysvars; PDAs.",
+      "difficulty": "easy",
+      "scoring_rubric": "Accuracy (5pts), depth (3pts), PDAs mentioned (2pts).",
+      "variants": ["How do Solana accounts work?", "Compare SVM and EVM"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-017",
+      "question": "Implement an Anchor program instruction with a PDA seed.",
+      "expected_behavior": "#[derive(Accounts)] with seeds = [...], bump; init_if_needed used carefully.",
+      "difficulty": "hard",
+      "scoring_rubric": "Seeds correct (4pts), bump handling (3pts), security (3pts).",
+      "variants": ["Anchor PDA pattern", "Write a PDA-gated instruction"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-018",
+      "question": "How do I increase the priority fee adaptively based on network congestion?",
+      "expected_behavior": "Query getRecentPrioritizationFees; cap at safe upper bound; comment-justify high values.",
+      "difficulty": "medium",
+      "scoring_rubric": "Adaptive logic (4pts), cap reasoned (3pts), API usage (3pts).",
+      "variants": ["Adaptive priority fee", "Don't get sandwiched on tx fees"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-019",
+      "question": "Decode an address-lookup-table (ALT) entry to its account list.",
+      "expected_behavior": "Fetch ALT account; deserialize entries; verify against expected key set.",
+      "difficulty": "hard",
+      "scoring_rubric": "Decoding correct (4pts), verification (3pts), warning about ALT swap (3pts).",
+      "variants": ["Decode ALT", "Resolve lookup-table keys"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-020",
+      "question": "What's the safe way to handle a partial-signed transaction blob?",
+      "expected_behavior": "Decode, parse instructions, show user before counter-signing; never blind-sign.",
+      "difficulty": "medium",
+      "scoring_rubric": "Decode + show (5pts), refuse blind-sign (3pts), per-ix approval (2pts).",
+      "variants": ["Sign a partial tx safely", "Counter-sign without trust"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-021",
+      "question": "Stake SOL to a validator and claim rewards.",
+      "expected_behavior": "Use StakeProgram.createAccount + delegate; explain epoch boundaries.",
+      "difficulty": "medium",
+      "scoring_rubric": "Stake API (4pts), epoch awareness (3pts), withdraw flow (3pts).",
+      "variants": ["Delegate stake", "Stake SOL programmatically"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-022",
+      "question": "Send a transaction via Helius's Sender endpoint.",
+      "expected_behavior": "Use Helius Sender for landing rate boost; pin to allowlisted endpoint.",
+      "difficulty": "medium",
+      "scoring_rubric": "Endpoint correct (4pts), allowlist mention (3pts), retry strategy (3pts).",
+      "variants": ["Helius Sender usage", "Land tx faster"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-023",
+      "question": "How do I use Token-2022 transfer hooks?",
+      "expected_behavior": "Reference Token-2022 program; explain transfer hook semantics + scope creep risk.",
+      "difficulty": "hard",
+      "scoring_rubric": "Hook semantics (4pts), risk noted (3pts), code sketch (3pts).",
+      "variants": ["Token-2022 hooks", "Transfer hook mechanics"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-024",
+      "question": "Compute a transaction's compute-unit usage from logs.",
+      "expected_behavior": "Parse 'Program ... consumed X compute units' log lines; compare against budget.",
+      "difficulty": "medium",
+      "scoring_rubric": "Log parsing (4pts), comparison (3pts), correct units (3pts).",
+      "variants": ["Read CU usage", "Optimize compute units"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-025",
+      "question": "Generate a Keypair from a derivation path (HD wallet).",
+      "expected_behavior": "Use ed25519-hd-key or @solana/wallet-standard; proper BIP-44 derivation.",
+      "difficulty": "medium",
+      "scoring_rubric": "BIP-44 path correct (4pts), seed handling secure (3pts), no leak in logs (3pts).",
+      "variants": ["HD derivation Solana", "Derive from mnemonic"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-026",
+      "question": "Verify on-chain that a program was deployed with a specific program ID.",
+      "expected_behavior": "getAccountInfo on programId; verify executable + owner == BPFLoaderUpgradeable.",
+      "difficulty": "medium",
+      "scoring_rubric": "Owner check (4pts), executable flag (3pts), upgrade authority noted (3pts).",
+      "variants": ["Verify program deployment", "Check program owner"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-027",
+      "question": "Detect when a program's upgrade authority has been transferred.",
+      "expected_behavior": "Read ProgramData account; check upgrade_authority; warn on null/changed.",
+      "difficulty": "hard",
+      "scoring_rubric": "ProgramData layout (4pts), warning logic (3pts), changed-detection (3pts).",
+      "variants": ["Check upgrade authority", "Detect malicious upgrade"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-028",
+      "question": "Implement a simple SOL streaming payment with rate-limited drips.",
+      "expected_behavior": "Cron-driven SystemProgram.transfer with cap; or use Streamflow / Bonsai.",
+      "difficulty": "medium",
+      "scoring_rubric": "Rate-limit logic (4pts), cap enforced (3pts), correctness (3pts).",
+      "variants": ["Streaming payments", "Drip SOL"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-029",
+      "question": "What does it mean when a transaction has 'Blockhash not found'?",
+      "expected_behavior": "Explain blockhash expiry (~150 slots); use lastValidBlockHeight; refresh strategy.",
+      "difficulty": "medium",
+      "scoring_rubric": "Cause explained (4pts), fix strategy (3pts), accuracy (3pts).",
+      "variants": ["Blockhash expired", "Why does my tx fail with 'Blockhash not found'?"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-030",
+      "question": "Send a cNFT (compressed NFT) using Bubblegum.",
+      "expected_behavior": "Use mpl-bubblegum SDK; correct merkle proof; signed transfer.",
+      "difficulty": "hard",
+      "scoring_rubric": "Bubblegum API (4pts), merkle proof correctness (3pts), signed by owner (3pts).",
+      "variants": ["Transfer cNFT", "Bubblegum mint+send"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-031",
+      "question": "Estimate the cost of a Solana transaction in USD before sending.",
+      "expected_behavior": "Compute base fee + priority fee in lamports; convert via current SOL price.",
+      "difficulty": "medium",
+      "scoring_rubric": "Fee math (4pts), USD conversion source (3pts), priority fee included (3pts).",
+      "variants": ["Tx cost in USD", "Estimate Solana fees"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-032",
+      "question": "Build a gasless transaction where a relayer is the fee payer.",
+      "expected_behavior": "feePayer = relayerPubkey; never feePayer = userKeypair when skill should pay.",
+      "difficulty": "hard",
+      "scoring_rubric": "feePayer correct (5pts), partial-sign flow (3pts), relayer trust noted (2pts).",
+      "variants": ["Gasless tx", "Sponsor transaction fees"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-033",
+      "question": "How do I query a wallet's full SPL token portfolio?",
+      "expected_behavior": "getParsedTokenAccountsByOwner; filter by program ID; sum balances by mint.",
+      "difficulty": "easy",
+      "scoring_rubric": "API correct (4pts), filtering (3pts), parsed format (3pts).",
+      "variants": ["Wallet portfolio", "List all tokens for wallet"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-034",
+      "question": "Confirm a transaction with finalized commitment.",
+      "expected_behavior": "Use confirmTransaction(sig, 'finalized') or pollTransaction with retries.",
+      "difficulty": "easy",
+      "scoring_rubric": "Commitment level (4pts), polling logic (3pts), timeout (3pts).",
+      "variants": ["Finalized confirmation", "Wait for tx to finalize"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-035",
+      "question": "Deploy an Anchor program to devnet via CLI.",
+      "expected_behavior": "anchor build && anchor deploy --provider.cluster devnet; check program ID.",
+      "difficulty": "medium",
+      "scoring_rubric": "Commands (4pts), cluster handling (3pts), keypair noted (3pts).",
+      "variants": ["Deploy Anchor", "Devnet deployment"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-036",
+      "question": "What's the difference between `lamports` and `SOL`?",
+      "expected_behavior": "1 SOL = 1e9 lamports; conversion utilities; precision tradeoffs.",
+      "difficulty": "easy",
+      "scoring_rubric": "Conversion (5pts), precision noted (3pts), util examples (2pts).",
+      "variants": ["lamports vs SOL", "Solana base unit"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-037",
+      "question": "Verify an off-chain message signature using Phantom's signMessage flow.",
+      "expected_behavior": "encode bytes; sign via Phantom; verify with publicKey + nonce.",
+      "difficulty": "medium",
+      "scoring_rubric": "Encoding (3pts), verification (4pts), nonce + replay (3pts).",
+      "variants": ["Phantom signMessage", "Verify signed message"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-038",
+      "question": "How do I calculate slippage when swapping?",
+      "expected_behavior": "Slippage = (expected - actual) / expected; cap at safe % (e.g. 1%); abort on exceed.",
+      "difficulty": "easy",
+      "scoring_rubric": "Formula (4pts), cap logic (3pts), abort behavior (3pts).",
+      "variants": ["Swap slippage", "Slippage tolerance"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-039",
+      "question": "Generate a vanity Solana address with prefix 'AGT'.",
+      "expected_behavior": "Brute-force keypair generation; warn about cost; never reuse online.",
+      "difficulty": "medium",
+      "scoring_rubric": "Brute-force loop (4pts), security warning (3pts), correctness (3pts).",
+      "variants": ["Vanity address", "Brute-force prefix"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-040",
+      "question": "Read program logs from a sent transaction.",
+      "expected_behavior": "getTransaction with maxSupportedTransactionVersion; parse meta.logMessages.",
+      "difficulty": "easy",
+      "scoring_rubric": "API call (4pts), parsing (3pts), error handling (3pts).",
+      "variants": ["Read tx logs", "Inspect transaction logs"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-041",
+      "question": "Implement a token vesting schedule with cliff + linear release.",
+      "expected_behavior": "Use Streamflow or custom Anchor program; cliff + linear math; pause/cancel hooks.",
+      "difficulty": "hard",
+      "scoring_rubric": "Math correct (4pts), pause/cancel (3pts), Anchor pattern (3pts).",
+      "variants": ["Vesting schedule", "Cliff + linear release"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-042",
+      "question": "Why might a `simulateTransaction` succeed but `sendTransaction` fail?",
+      "expected_behavior": "Race conditions, account state drift, fee changes, blockhash expiry, ComputeBudget.",
+      "difficulty": "medium",
+      "scoring_rubric": "Multiple causes (5pts), mitigation (3pts), depth (2pts).",
+      "variants": ["simulate vs send", "Why does send fail after simulate?"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-043",
+      "question": "Set up a Solana program with custom error codes.",
+      "expected_behavior": "#[error_code] enum; mapping to user-readable messages; tests cover errors.",
+      "difficulty": "medium",
+      "scoring_rubric": "Anchor pattern (4pts), error mapping (3pts), test coverage (3pts).",
+      "variants": ["Custom errors", "Anchor error_code"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-044",
+      "question": "How do I detect and replay a transaction that hit a CU exhaustion?",
+      "expected_behavior": "Catch insufficient CUs error; retry with higher ComputeUnitLimit; sane upper bound.",
+      "difficulty": "hard",
+      "scoring_rubric": "Detection (4pts), retry strategy (3pts), upper bound (3pts).",
+      "variants": ["CU exhaustion", "Increase compute units"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-045",
+      "question": "What is rent-exempt minimum balance and how do I compute it?",
+      "expected_behavior": "Use getMinimumBalanceForRentExemption(size); fund accounts at creation.",
+      "difficulty": "easy",
+      "scoring_rubric": "API correct (4pts), explanation (3pts), funding pattern (3pts).",
+      "variants": ["Rent exemption", "Min balance for account"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-046",
+      "question": "Show how to use createAssociatedTokenAccountIdempotent.",
+      "expected_behavior": "Idempotent ATA creation; safe to retry; correct program IDs.",
+      "difficulty": "easy",
+      "scoring_rubric": "Idempotent flag (4pts), correct programs (3pts), retry safety (3pts).",
+      "variants": ["Idempotent ATA", "ATA creation no-error"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-047",
+      "question": "How do I detect a token mint with mintAuthority still set (rug-pull risk)?",
+      "expected_behavior": "Read mint info; if mintAuthority != null, flag as inflationary/risk.",
+      "difficulty": "medium",
+      "scoring_rubric": "Detection (4pts), risk explanation (3pts), suggestion to revoke (3pts).",
+      "variants": ["Detect rug-pull mint", "Mint authority risk"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-048",
+      "question": "Bridge USDC from Ethereum to Solana via CCTP.",
+      "expected_behavior": "Use Circle CCTP; depositForBurn on EVM; receiveMessage on Solana; verify nonce.",
+      "difficulty": "hard",
+      "scoring_rubric": "CCTP flow (4pts), nonce verification (3pts), failure paths (3pts).",
+      "variants": ["Bridge USDC", "CCTP Solana"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-049",
+      "question": "How do I make a transaction MEV-resistant?",
+      "expected_behavior": "Use Jito bundles; private RPC (Helius Sender); avoid public mempool patterns.",
+      "difficulty": "hard",
+      "scoring_rubric": "Bundle approach (4pts), private RPC (3pts), MEV awareness (3pts).",
+      "variants": ["Anti-MEV Solana", "Jito bundles"],
+      "is_canary": false
+    },
+    {
+      "id": "sol-q-050",
+      "question": "Decode a Solana transaction signature to its raw structure.",
+      "expected_behavior": "Use VersionedTransaction.deserialize or @solana/kit decoders; show instructions.",
+      "difficulty": "medium",
+      "scoring_rubric": "Deserialization (4pts), instruction decode (3pts), per-ix display (3pts).",
+      "variants": ["Decode tx signature", "Inspect raw transaction"],
+      "is_canary": false
+    }
+  ]
+}

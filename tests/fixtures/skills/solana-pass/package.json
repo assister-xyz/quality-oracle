@@ -1,0 +1,8 @@
+{
+  "name": "solana-pass-fixture",
+  "version": "0.0.1",
+  "dependencies": {
+    "@solana/web3.js": "1.95.3",
+    "@solana-program/system": "0.5.4"
+  }
+}
