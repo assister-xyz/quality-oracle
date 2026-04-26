@@ -163,6 +163,25 @@ class Settings(BaseSettings):
     # Anthropic Sonnet minimum cacheable prompt size (cache_control rejected below).
     anthropic_min_cacheable_tokens: int = 2048
 
+    # ── L3 Claude Code SDK Harness (QO-059) ──────────────────────────────────
+    # Pinned image SHAs for reproducibility (AC5). Bumping these requires
+    # validation against the 5-fixture suite (Spearman ρ ≥ 0.95) — see the
+    # rollback runbook in QO-059 spec. Renovate-bot PRs that bump
+    # claude-agent-sdk / @anthropic-ai/claude-code rebuild + re-pin via
+    # .github/workflows/build-l3-image.yml.
+    laureum_l3_docker_image_sha: str = ""  # e.g. "sha256:abc123..."
+    laureum_l3_docker_image_tag: str = "laureum-claude-code-runner:latest"
+    laureum_proxy_image_sha: str = ""  # egress-proxy sidecar (squid allowlist)
+    laureum_proxy_image_tag: str = "laureum-proxy:latest"
+    # Pre-flight cost ceiling per skill (AC4) — refuse to start if estimate exceeds.
+    laureum_l3_cost_ceiling_usd: float = 1.00
+    # Hard fail if SKILL.md body exceeds this (AC9 boundary, QO-053-A AC9).
+    laureum_l3_max_skill_body_bytes: int = 100_000
+    # Concurrency caps for batch L3 runs (AC7).
+    laureum_l3_concurrency: int = 3
+    # Skip Docker container cleanup for debugging (set LAUREUM_KEEP_DOCKER=1).
+    laureum_keep_docker: bool = False
+
     # ── GitHub OAuth (QO-046) ────────────────────────────────────────────────
     github_client_id: str = ""
     github_client_secret: str = ""

@@ -269,15 +269,3 @@ class TestReset:
         assert fs.tool_calls_log == []
 
 
-# ── L3 stub guarantees ──────────────────────────────────────────────────────
-
-
-def test_l3_stub_raises():
-    """L3 stub must NOT be importable from the activator module without raising."""
-    from src.core.skill_activator import L3ClaudeCodeActivator
-    stub = L3ClaudeCodeActivator()  # construction allowed for introspection
-    import asyncio as _asyncio
-    with pytest.raises(NotImplementedError, match="L3 ships in QO-059"):
-        _asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
-            stub.respond("anything")
-        )
