@@ -31,7 +31,7 @@ def mock_attestation_with_vc():
     key = Ed25519PrivateKey.generate()
     aqvc_payload = {
         "aqvc_version": "1.0",
-        "issuer": "did:web:agenttrust.assisterr.ai",
+        "issuer": "did:web:laureum.ai",
         "issued_at": "2026-02-28T12:00:00Z",
         "expires_at": "2026-03-30T12:00:00Z",
         "evaluation_version": "v1.0",

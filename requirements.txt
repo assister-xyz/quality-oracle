@@ -34,10 +34,6 @@ eth-account>=0.8.0
 # Skill parser (QO-053-A)
 strictyaml>=1.7.3
 
-# Skill activation (QO-053-B)
-anthropic>=0.39.0
-cerebras-cloud-sdk>=1.0.0
-
 # Utils
 python-dotenv==1.0.1
 python-multipart==0.0.20

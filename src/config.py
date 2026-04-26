@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # JWT Attestation Signing (Ed25519)
     jwt_private_key_path: str = ""
     jwt_private_key: str = ""  # Base64-encoded key content (alternative to file path)
-    jwt_issuer: str = "did:web:agenttrust.assisterr.ai"
+    jwt_issuer: str = "did:web:laureum.ai"
     attestation_validity_days: int = 30
 
     # Payment — Receiver Wallet
@@ -138,16 +138,6 @@ class Settings(BaseSettings):
     # All CPCR fields are nullable so consumers degrade gracefully.
     enable_cpcr: bool = False
     cpcr_correct_threshold: int = 70  # matches judge rubric "correct result" band
-
-    # ── QO-053-F: Eval-hash version pins ─────────────────────────────────────
-    # Pinned version strings that are folded into ``compute_eval_hash`` (CB4).
-    # Bumping any of these constants forces full re-eval of every cached
-    # skill score. Use semver-ish strings so external consumers can range
-    # the cache invalidation when they upgrade.
-    question_pack_v: str = "qpack-v1.0"
-    probe_pack_v: str = "ppack-v1.0"
-    judge_models_pinned: str = "cerebras+groq+gemini-v1"
-    eval_settings_v: str = "evset-v1.0"
 
     # ── Skill Activation Adapter (QO-053-B) ──────────────────────────────────
     # Default provider per CB1 (DECISIONS.md): Cerebras free tier. Anthropic

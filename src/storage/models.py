@@ -7,9 +7,30 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class TargetType(str, Enum):
+    # ── Original triplet (pre-QO-058) ──────────────────────────────────────
     MCP_SERVER = "mcp_server"
-    AGENT = "agent"
+    AGENT = "agent"  # legacy generic-agent slot — pre-058 dispatch did nothing
     SKILL = "skill"
+    # ── QO-058: generic agent protocols ────────────────────────────────────
+    # A2A_AGENT  — Google Agent2Agent v1.0 (12 Mar 2026), agent-card.json
+    # REST_CHAT  — manifest-less generic REST/JSON chat agents (long tail).
+    #              Capped at Verified tier unless OpenAPI doc supplied or
+    #              calibration n=10 + correlation feedback ≥10 escalates
+    #              `inference_confidence` from medium → high (spec §"Path to
+    #              Certified for manifest-less").
+    # OPENAPI_AGENT — Generic OpenAPI/Swagger-described agent. Manifest is
+    #                 the OpenAPI doc → full 6-axis weights apply.
+    # UNKNOWN     — placeholder pre-resolution; the discovery cascade rewrites
+    #               it to a concrete type before evaluator dispatch.
+    #
+    # Migration note: legacy rows with target_type='agent' need NO migration —
+    # the dispatcher routes them to the not-implemented branch in 053-C and
+    # 058 leaves that path alone (fail-fast). New evaluations submit one of
+    # the four new values explicitly.
+    A2A_AGENT = "a2a_agent"
+    REST_CHAT = "rest_chat"
+    OPENAPI_AGENT = "openapi_agent"
+    UNKNOWN = "unknown"
 
 
 class EvalStatus(str, Enum):
@@ -208,6 +229,22 @@ class EvaluateRequest(BaseModel):
     webhook_url: Optional[str] = None
     callback_secret: Optional[str] = None
     erc8004_agent_id: Optional[int] = None  # ERC-8004 agent token ID for on-chain reputation
+
+
+class SubmitSkillRequest(BaseModel):
+    """QO-060: skill bundle uploaded via drag-drop or GitHub URL.
+
+    Frontend posts an in-memory SKILL.md bundle (frontmatter + body + provenance)
+    instead of a URL. Backend materializes to a temp dir and dispatches through
+    the standard evaluate_skill() pipeline.
+    """
+    frontmatter: Dict[str, Any]
+    body: str
+    source: str = "drag"  # "drag" | "github"
+    filename: Optional[str] = None
+    level: EvalLevel = EvalLevel.MANIFEST
+    eval_mode: EvalMode = EvalMode.VERIFIED
+    webhook_url: Optional[str] = None
 
 
 # Response models
@@ -786,70 +823,3 @@ class ActivationDLQEntry(BaseModel):
     error_class: str = ""
     error_message: str = ""
     attempt_count: int = 0
-
-
-# ── Skill Score persistence (QO-053-F) ───────────────────────────────────────
-
-
-class SkillScore(BaseModel):
-    """One persisted skill-eval row in ``quality__skill_scores``.
-
-    See spec QO-053-F §"SkillScore model" + R9 §2.2. The schema is the public
-    contract for ``laureum-replay --eval-hash <hash>`` (QO-065) so adding
-    fields here is safe (the runner ``model_dump()``s into MongoDB) but
-    *renaming* or *removing* fields without a migration breaks replay.
-
-    The ``components`` dict carries every input that flows into
-    :func:`src.core.eval_hash.compute_eval_hash` so an external auditor can
-    recompute the hash from the persisted record alone.
-    """
-    model_config = ConfigDict(use_enum_values=True, extra="allow")
-
-    eval_hash: str  # 16 hex chars
-    skill_name: str  # NFKC-normalized (matches ParsedSkill.name)
-    skill_sha: str  # git SHA-1 of the skill at eval time
-    skill_repo: str  # e.g. "sendaifun/skills"
-    evaluated_at: datetime = Field(default_factory=datetime.utcnow)
-
-    # All five eval-hash components plus activation_model (CB4) — sufficient
-    # for an offline auditor to reproduce the hash.
-    components: Dict[str, str] = Field(default_factory=dict)
-    # Mirror of ``settings.LAUREUM_ACTIVATION_PROVIDER`` so finance can
-    # reconcile any Cerebras→Anthropic fallthrough events (AC8).
-    activation_provider: str = ""
-
-    target_type: TargetType = TargetType.SKILL
-    level: EvalLevel = EvalLevel.FUNCTIONAL
-
-    # 6-axis scores (accuracy/safety/process_quality/reliability/latency/schema_quality).
-    scores_6axis: Dict[str, float] = Field(default_factory=dict)
-    spec_compliance: Dict[str, Any] = Field(default_factory=dict)
-    probe_results: List[Dict[str, Any]] = Field(default_factory=list)
-    overall_score: float = 0.0
-    baseline_score: Optional[float] = None
-    delta_vs_baseline: Optional[float] = None
-    tier: str = "verified"
-    confidence: float = 0.0
-
-    cost_dollars: float = 0.0
-    # Tracks any paid Anthropic spend incurred when the Cerebras free tier
-    # ran out mid-batch (AC8). Always 0 on Cerebras-only runs.
-    paid_fallthrough_dollars: float = 0.0
-    # Marketplace billing isolation tag (AC8 — `--billing-tag` flag).
-    billing_tag: Optional[str] = None
-    latency_ms: int = 0
-
-    # Reference to the gzipped audit blob (GridFS object id; S3 key in the
-    # future). ``None`` when the run was a dry-run or when the audit blob
-    # exceeded GridFS limits and was dropped.
-    audit_blob_id: Optional[str] = None
-
-    # Outcome of the run for this single skill: "ok" | "skip" | "error".
-    # AC6: skipped skills must persist with an explicit reason.
-    outcome: str = "ok"
-    skip_reason: Optional[str] = None
-    error_message: Optional[str] = None
-
-    # Did this row come back from the L1 cache (no LLM calls)?
-    cached: bool = False
-    ts: datetime = Field(default_factory=datetime.utcnow)

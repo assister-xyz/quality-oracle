@@ -65,46 +65,6 @@ async def _maybe_await(value):
     return value
 
 
-# Tokens that imply the skill is Solana-domain — used by ``evaluate_skill``
-# to gate the SOL-* probe pack. Conservative: any of these in the parsed
-# name, description, or frontmatter metadata flips the skill to Solana.
-_SOLANA_TOKENS = (
-    "solana", "spl-token", "anchor", "@solana/", "solana-program",
-    "phantom", "helius", "quicknode", "metaplex", "raydium", "jupiter",
-    "meteora", "pumpfun", "drift", "squads", "@solana/web3.js",
-    "@solana/kit",
-)
-
-
-def _is_solana_skill(parsed) -> bool:
-    """Return True iff the parsed skill metadata signals Solana-domain.
-
-    Checks (in order, cheap → expensive): folder name, declared name,
-    description, frontmatter metadata, and finally a sniff of the body
-    for a Solana import. The body sniff is bounded to avoid scanning
-    huge skill bodies — first 4KB is plenty to catch any import.
-    """
-    try:
-        haystack_parts: list[str] = []
-        for attr in ("folder_name", "name", "description"):
-            v = getattr(parsed, attr, None)
-            if v:
-                haystack_parts.append(str(v))
-        meta = getattr(parsed, "metadata", None) or {}
-        for k, v in meta.items():
-            haystack_parts.append(f"{k}={v}")
-        body = getattr(parsed, "body", "") or ""
-        if body:
-            haystack_parts.append(body[:4096])
-        haystack = " ".join(haystack_parts).lower()
-        for tok in _SOLANA_TOKENS:
-            if tok in haystack:
-                return True
-    except Exception:  # pragma: no cover - defensive
-        return False
-    return False
-
-
 def compute_skill_tier(
     absolute: float,
     delta: Optional[float],
@@ -151,15 +111,13 @@ def compute_skill_tier(
     if delta is None or delta < 10 or absolute < 65:
         return "verified"
     if absolute < 75:
-        # bronze cap stands; HIGH probe fail still caps at silver-or-below
-        # (i.e. cannot upgrade out of bronze).
         return "bronze"
     if absolute < 85:
         return "silver"
     # AC9: at L3, a HIGH-severity probe FAIL prevents earning gold; cap at
     # silver — never deny down to bronze when absolute already merits gold,
-    # to keep the tier monotone in absolute score for builders who fix the
-    # HIGH and re-submit.
+    # so the tier remains monotone in absolute score for builders who fix
+    # the HIGH and re-submit.
     if has_high_probe_fail:
         return "silver"
     return "gold"
@@ -263,13 +221,6 @@ class EvaluationResult(BaseModel):
     target_type_dispatched: Optional[TargetType] = None
     subject_uri: Optional[str] = None
     spec_compliance: Optional[Dict[str, Any]] = None  # serialised SpecCompliance for skills
-
-    # ── QO-053-D: Solana adversarial probe pack ──────────────────────────────
-    # Populated by ``evaluate_skill`` when the skill is Solana-tagged. Fields
-    # stay None for non-Solana skills and legacy MCP evaluations so AC9 (byte-
-    # identical regression) is preserved.
-    solana_probes: Optional[List[Dict[str, Any]]] = None
-    solana_safety_deduction: Optional[int] = None  # negative integer applied to safety_score
 
     def compute_cpcr(self, correct_threshold: int = 70) -> Dict[str, Any]:
         """Compute the three CPCR variants from judge_responses + cost data.
@@ -376,10 +327,6 @@ class EvaluationResult(BaseModel):
             d["subject_uri"] = self.subject_uri
         if self.spec_compliance is not None:
             d["spec_compliance"] = self.spec_compliance
-        if self.solana_probes is not None:
-            d["solana_probes"] = self.solana_probes
-        if self.solana_safety_deduction is not None:
-            d["solana_safety_deduction"] = self.solana_safety_deduction
         return d
 
 
@@ -1462,107 +1409,12 @@ class Evaluator:
                 baseline_status = "failed"
         result.baseline_status = baseline_status
 
-        # ── QO-053-D + QO-053-E: combined adversarial probe pack ───────
-        # We run BOTH probe runners and aggregate their HIGH-severity
-        # FAIL signal for the L3 tier gate. D contributes Solana-specific
-        # static + LLM probes (only for solana skills); E contributes the
-        # generic 3-phase skill probe pack (deterministic + LLM + private).
-        # Conflict-resolution note: D and E both extended evaluate_skill(),
-        # E adopted D's probe_result.py module so they aggregate cleanly.
-        _has_high_probe_fail = False
-
-        # ── QO-053-D: Solana adversarial probe pack ─────────────────────
-        # Static probes always run (zero cost). LLM probes only when an
-        # activator and a judge_fn are present.
-        try:
-            from src.core.solana_probes import SolanaProbeRunner
-            from src.core.probe_result import aggregate_safety_deductions
-            from pathlib import Path as _Path
-
-            if _is_solana_skill(parsed):
-                runner = SolanaProbeRunner()
-                dir_path = _Path(getattr(target, "subject_uri", "") or "")
-                if not dir_path.is_dir():
-                    dir_path = None  # type: ignore[assignment]
-                probes: list = list(runner.run_static_probes(parsed, dir_path))  # type: ignore[arg-type]
-                if activator_factory is not None and runner.judge_fn is not None:
-                    try:
-                        skill_agent = await _maybe_await(activator_factory())
-                        probes.extend(await runner.run_llm_probes(skill_agent))
-                    except Exception as _exc:  # noqa: BLE001
-                        logger.warning("Solana LLM probes failed: %s", _exc)
-                else:
-                    probes.extend(await runner.run_llm_probes(skill_agent=None))  # type: ignore[arg-type]
-                result.solana_probes = [p.model_dump() for p in probes]
-                result.solana_safety_deduction = aggregate_safety_deductions(probes)
-                # Aggregate Solana HIGH probe fails into the tier-gate flag.
-                for p in result.solana_probes:
-                    if p.get("outcome") == "fail" and p.get("severity") == "high":
-                        _has_high_probe_fail = True
-                        break
-        except Exception as _exc:  # pragma: no cover - defensive
-            logger.warning("Solana probe pack failed (non-fatal): %s", _exc)
-
-        # ── QO-053-E adversarial probe pack ───────────────────────
-        # Phase 0 (deterministic) always runs: $0, ≤1s. Phase 1 (LLM judges)
-        # runs only when an activator is present AND ``level >= FUNCTIONAL``.
-        # Phase 2 is PRIVATE (M5) and only at ``DOMAIN_EXPERT``.
-        probe_results: List[Any] = []
-        try:
-            from pathlib import Path as _Path
-            from src.core.skill_probes import SkillProbeRunner
-            from src.core.probe_result import (
-                aggregate_safety_deductions,
-                Outcome as _ProbeOutcome,
-            )
-            from src.storage.models import Severity as _Severity
-
-            probe_runner = SkillProbeRunner(judge_fn=ajudge_rubric)
-            dir_path = _Path(getattr(target, "skill_dir", "")) if getattr(target, "skill_dir", None) else None
-            phase0 = await probe_runner.run_phase_0(parsed, dir_path)
-            probe_results.extend(phase0)
-            if activator_factory is not None and level >= _EvalLevel.FUNCTIONAL:
-                try:
-                    probe_activator = await _maybe_await(activator_factory())
-                    phase1 = await probe_runner.run_phase_1(probe_activator)
-                    probe_results.extend(phase1)
-                    if level >= _EvalLevel.DOMAIN_EXPERT:
-                        phase2 = await probe_runner.run_phase_2(probe_activator)
-                        probe_results.extend(phase2)
-                except Exception as _exc:  # noqa: BLE001
-                    logger.warning("Phase-1/2 probe activation failed: %s", _exc)
-            # Persist + aggregate.
-            result.probe_results = [
-                p.model_dump(mode="json") if hasattr(p, "model_dump") else dict(p)
-                for p in probe_results
-            ]
-            result.owasp_coverage = SkillProbeRunner.owasp_coverage(probe_results)
-            _e_high_fail = SkillProbeRunner.has_high_severity_fail(probe_results)
-            result.has_high_severity_probe_fail = _e_high_fail
-            # OR with Solana flag — either probe-pack's HIGH fail trips gate.
-            _has_high_probe_fail = _has_high_probe_fail or _e_high_fail
-            deduction = aggregate_safety_deductions(probe_results)
-            skill_safety_score = max(0, min(100, 100 + deduction))
-            result.safety_report = {
-                **(result.safety_report or {}),
-                "skill_probe_score": skill_safety_score,
-                "skill_probe_deduction": deduction,
-                "skill_probe_count": len(probe_results),
-                "skill_probe_high_severity_fails": [
-                    p.id for p in probe_results
-                    if p.outcome == _ProbeOutcome.FAIL and p.severity == _Severity.HIGH
-                ],
-            }
-        except Exception as _exc:  # pragma: no cover - defensive
-            logger.warning("Skill probe pack failed (non-fatal): %s", _exc)
-
-        # Tier gate (R7 §9 + AC5 + AC10 + QO-053-E AC9).
+        # Tier gate (R7 §9 + AC5 + AC10).
         result.tier = compute_skill_tier(
             absolute=absolute,
             delta=result.delta_vs_baseline,
             level=level,
             baseline_status=baseline_status,
-            has_high_probe_fail=_has_high_probe_fail,
         )
 
         # Confidence — sample size + spec compliance modulator.
