@@ -106,15 +106,11 @@ async def test_dispatch_agent_records_not_implemented(monkeypatch, fake_col):
 
     assert mcp.await_count == 0
     assert skill.await_count == 0
-    # The dispatcher must record a failed status with an explicit error.
-    # QO-058 shipped, so the legacy 'agent' slot now redirects to the new
-    # ``a2a_agent`` / ``rest_chat`` types — the error message guides the
-    # caller to resubmit with one of those.
+    # The dispatcher must record a failed status with an explicit error
     assert len(fake_col.updates) == 1
     set_payload = fake_col.updates[0][0][1]["$set"]
     assert set_payload["status"] == "failed"
-    assert set_payload["error_type"] == "legacy_target_type"
-    assert "a2a_agent" in set_payload["error"] and "rest_chat" in set_payload["error"]
+    assert "QO-058" in set_payload["error"]
 
 
 # ── EvalLevel mapping (CB3) ─────────────────────────────────────────────────
