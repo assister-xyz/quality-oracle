@@ -123,6 +123,16 @@ class Settings(BaseSettings):
     webhook_timeout_seconds: int = 10
     webhook_max_retries: int = 3
 
+    # ── QO-053-H: Marketplace revalidation webhook ──────────────────────────
+    # Frontend Next.js demo (laureum.ai) exposes a revalidate endpoint at
+    # ``${frontend_revalidate_base}/api/revalidate?path=...&secret=${frontend_revalidate_secret}``.
+    # The QO-053-F batch runner POSTs to this after persisting a fresh
+    # skill score so ISR pages refresh on the next request without waiting
+    # for the 24h timer. Both fields default empty → batch runner skips
+    # the webhook silently in environments that haven't configured it.
+    frontend_revalidate_base: str = ""
+    frontend_revalidate_secret: str = ""
+
     # Base URL for constructing links in responses (fallback only)
     base_url: str = "http://localhost:8002"
 
