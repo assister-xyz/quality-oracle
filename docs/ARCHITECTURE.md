@@ -333,7 +333,7 @@ GET    /v1/evaluate/{eval_id}    # Poll evaluation status + get report
       "level3": null
     },
     "attestation_jwt": "eyJ...",
-    "badge_url": "https://agenttrust.assisterr.ai/v1/badge/srv_123.svg"
+    "badge_url": "https://laureum.ai/v1/badge/srv_123.svg"
   }
 
 # Scores
@@ -465,7 +465,7 @@ AQVC is the canonical attestation format — the AgentTrust standard. It's desig
 ```json
 {
   "aqvc_version": "1.0",
-  "issuer": "did:web:agenttrust.assisterr.ai",
+  "issuer": "did:web:laureum.ai",
   "issued_at": "2026-02-23T12:00:00Z",
   "expires_at": "2026-03-25T12:00:00Z",
   "evaluation_version": "v1.0",
