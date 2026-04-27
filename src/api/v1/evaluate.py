@@ -438,6 +438,7 @@ async def get_evaluation_status(
         badge_url=badge_url,
         result=result,
         error=doc.get("error"),
+        error_type=doc.get("error_type"),
         duration_ms=duration_ms,
         gaming_risk=gaming_risk,
         timing_anomaly=timing_anomaly,
