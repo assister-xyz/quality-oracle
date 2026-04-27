@@ -118,6 +118,40 @@ async def get_share_data(
     }
 
 
+@router.get("/score-history/{target_id:path}")
+async def get_score_history(
+    target_id: str,
+    response: Response,
+    limit: int = Query(50, ge=1, le=200),
+    api_key_doc: dict = Depends(get_api_key),
+):
+    """Score-history rows recorded over time for one target.
+
+    Each row is one completed evaluation. ``target_id:path`` accepts URN
+    forms like ``urn:laureum:skill:<uuid>`` and bare URLs.
+    """
+    from src.storage.mongodb import score_history_col
+    key_tier = api_key_doc.get("tier", "free")
+    key_hash = api_key_doc["_id"]
+    allowed, remaining, rl_limit = await check_score_lookup_limit(key_hash, key_tier)
+    add_rate_limit_headers(response, key_tier, rl_limit, remaining)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Score lookup rate limit exceeded")
+
+    cursor = score_history_col().find({"target_id": target_id}).sort("recorded_at", -1).limit(limit)
+    items = []
+    async for doc in cursor:
+        items.append({
+            "recorded_at": doc.get("recorded_at"),
+            "score": doc.get("score"),
+            "tier": doc.get("tier"),
+            "evaluation_id": doc.get("evaluation_id"),
+            "evaluation_version": doc.get("evaluation_version"),
+            "target_type": doc.get("target_type"),
+        })
+    return {"target_id": target_id, "count": len(items), "items": items}
+
+
 @router.get("/score/{target_id:path}", response_model=ScoreResponse)
 async def get_score(
     target_id: str,
@@ -183,12 +217,17 @@ async def list_scores(
     domain: Optional[str] = None,
     min_score: int = Query(0, ge=0, le=100),
     tier: Optional[str] = None,
+    target_type: Optional[str] = None,
     sort: str = Query("score", regex="^(score|name|date)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     api_key_doc: dict = Depends(get_api_key),
 ):
-    """List quality scores with filtering and pagination."""
+    """List quality scores with filtering and pagination.
+
+    ``target_type`` filters by ``skill`` / ``mcp_server`` / ``a2a_agent`` /
+    ``rest_chat`` etc., matching the values persisted by each runner.
+    """
     key_tier = api_key_doc.get("tier", "free")
     key_hash = api_key_doc["_id"]
     allowed, remaining, rl_limit = await check_score_lookup_limit(key_hash, key_tier)
@@ -202,6 +241,8 @@ async def list_scores(
         query["tier"] = tier
     if domain:
         query["detected_domain"] = domain
+    if target_type:
+        query["target_type"] = target_type
 
     sort_field = {"score": "current_score", "date": "last_evaluated_at", "name": "target_id"}
     sort_key = sort_field.get(sort, "current_score")
@@ -232,6 +273,10 @@ async def list_scores(
             "cost_usd": doc.get("last_cost_usd"),
             "shadow_cost_usd": doc.get("last_shadow_cost_usd"),
             "cpcr": doc.get("last_cpcr"),
+            "attestation_id": doc.get("attestation_id"),
+            "marketplace_slug": doc.get("marketplace_slug"),
+            "subject_uri": doc.get("subject_uri"),
+            "axis_weights_used": doc.get("axis_weights_used"),
         })
 
     total = await scores_col().count_documents(query)

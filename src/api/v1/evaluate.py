@@ -285,6 +285,15 @@ async def submit_skill_evaluation(
         "skill_source": request.source,
         "skill_filename": request.filename,
         "skill_name_declared": skill_name,
+        # Marketplace bucket: callers may pass `marketplace_slug` on the
+        # request; otherwise we default by source. github → use repo owner
+        # if recognized in frontmatter `metadata.repo` / body, else "uploaded".
+        "marketplace_slug": (
+            getattr(request, "marketplace_slug", None) or
+            ("sendai" if (request.source == "github" and any(
+                "sendai" in str(v).lower() for v in (request.frontmatter.get("metadata", {}) or {}).values()
+            ) or "sendai" in skill_name.lower()) else "uploaded")
+        ),
         "caller_api_key_hash": caller_api_key_hash,
         "caller_tier": tier,
         "caller_org": caller_org,
@@ -1105,6 +1114,21 @@ async def _run_evaluation_skill(evaluation_id: str, request: EvaluateRequest):
             getattr(parsed, "folder_name", None) or
             "uploaded-skill"
         )
+        # Default marketplace bucket for skills: read from the evaluation
+        # doc (set at submit time when we know the source/origin), or fall
+        # back to "uploaded". Per-source enrichment lives in submit_skill_evaluation.
+        slug = "uploaded"
+        try:
+            existing = await evaluations_col().find_one(
+                {"_id": evaluation_id},
+                {"marketplace_slug": 1, "skill_source": 1},
+            )
+            if existing:
+                slug = existing.get("marketplace_slug") or (
+                    "sendai" if (existing.get("skill_source") == "github" and "sendai" in (parsed.body or "").lower()) else "uploaded"
+                )
+        except Exception:
+            pass
         attestation_id = await _persist_completed_eval(
             evaluation_id=evaluation_id,
             target_id=target_id,
@@ -1113,6 +1137,7 @@ async def _run_evaluation_skill(evaluation_id: str, request: EvaluateRequest):
             request=request,
             scores=scores,
             duration_ms=eval_duration_ms,
+            marketplace_slug=slug,
         )
 
         await evaluations_col().update_one(
@@ -1211,12 +1236,18 @@ async def _persist_completed_eval(
     request: EvaluateRequest,
     scores: dict,
     duration_ms: int,
+    marketplace_slug: str | None = None,
 ) -> str | None:
     """Persist evaluation completion to scores_col + score_history + attestations.
 
     Mirrors what _run_evaluation_mcp does for MCP servers so skill / A2A / REST
     chat evals also produce a scoreboard entry, history row, and AQVC
     credential. Returns the attestation_id (or None if creation fails).
+
+    ``marketplace_slug`` (optional) tags the score with a marketplace bucket
+    so ``GET /v1/marketplace/{slug}`` surfaces it. For SKILL targets we
+    derive a slug from the parsed skill folder/name. For other types,
+    callers may pass a slug to opt in.
     """
     now = datetime.utcnow()
     overall_score = int(scores.get("overall_score", 0) or 0)
@@ -1240,25 +1271,33 @@ async def _persist_completed_eval(
         logger.warning(f"[{evaluation_id[:8]}] attestation creation failed: {exc}")
 
     try:
+        set_fields: dict = {
+            "target_id": target_id,
+            "target_type": target_type,
+            "current_score": overall_score,
+            "tier": tier,
+            "confidence": confidence,
+            "evaluation_version": EVALUATION_VERSION,
+            "last_evaluated_at": now,
+            "last_evaluation_id": evaluation_id,
+            "duration_ms": duration_ms,
+            "last_eval_mode": request.eval_mode.value,
+            "dimensions": scores.get("dimensions", {}),
+            "safety_report": scores.get("safety_report") or scores.get("safety", {}),
+            "subject_uri": scores.get("subject_uri") or target_id,
+            "axis_weights_used": scores.get("axis_weights_used"),
+            "attestation_id": attestation_id,
+            "last_token_usage": scores.get("token_usage"),
+            "last_cost_usd": (scores.get("token_usage") or {}).get("cost_usd"),
+            "last_shadow_cost_usd": (scores.get("token_usage") or {}).get("shadow_cost_usd"),
+            "last_cpcr": scores.get("cpcr"),
+        }
+        if marketplace_slug:
+            set_fields["marketplace_slug"] = marketplace_slug
         await scores_col().update_one(
             {"target_id": target_id},
             {
-                "$set": {
-                    "target_id": target_id,
-                    "target_type": target_type,
-                    "current_score": overall_score,
-                    "tier": tier,
-                    "confidence": confidence,
-                    "evaluation_version": EVALUATION_VERSION,
-                    "last_evaluated_at": now,
-                    "last_evaluation_id": evaluation_id,
-                    "duration_ms": duration_ms,
-                    "last_eval_mode": request.eval_mode.value,
-                    "dimensions": scores.get("dimensions", {}),
-                    "safety_report": scores.get("safety_report") or scores.get("safety", {}),
-                    "subject_uri": scores.get("subject_uri") or target_id,
-                    "axis_weights_used": scores.get("axis_weights_used"),
-                },
+                "$set": set_fields,
                 "$inc": {"evaluation_count": 1},
                 "$setOnInsert": {"first_evaluated_at": now},
             },
