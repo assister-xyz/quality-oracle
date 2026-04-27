@@ -79,11 +79,16 @@ def _derive_r5_risk_score(probe_results: List[Dict[str, Any]], score: int) -> fl
 
 
 def _slug_to_repo_filter(slug: str) -> Dict[str, Any]:
-    """Map a public slug like ``sendai`` to the MongoDB ``skill_repo`` regex."""
-    # The skill_repo column for SendAI skills looks like
-    # "sendai/skills/jupiter" or "github.com/sendaifun/...". Match either.
+    """Filter for both batch-runner (``quality__skill_scores``) and runtime
+    (``quality__scores``) collections.
+
+    Runtime evals (API path) tag each row with ``marketplace_slug`` directly.
+    Batch runner rows store ``skill_repo`` as a path; we keep the legacy
+    regex matchers for backwards compat with QO-053-F output.
+    """
     return {
         "$or": [
+            {"marketplace_slug": slug},
             {"skill_repo": {"$regex": f"^{slug}/", "$options": "i"}},
             {"skill_repo": {"$regex": f"/{slug}/", "$options": "i"}},
             {"skill_repo": {"$regex": f"{slug}fun", "$options": "i"}},
@@ -92,47 +97,72 @@ def _slug_to_repo_filter(slug: str) -> Dict[str, Any]:
     }
 
 
+def _doc_to_marketplace_item(
+    doc: Dict[str, Any],
+    skill_id: str,
+    score_int: int,
+    r5: float,
+) -> MarketplaceListItem:
+    return MarketplaceListItem(
+        id=skill_id,
+        subject_uri=doc.get("subject_uri") or skill_id,
+        name=doc.get("name") or doc.get("skill_name") or skill_id,
+        slug=doc.get("slug") or doc.get("marketplace_slug") or skill_id,
+        category=doc.get("category"),
+        score=score_int,
+        tier=doc.get("tier", "failed"),
+        last_eval_at=doc.get("last_evaluated_at"),
+        axes=doc.get("dimensions", {}) or doc.get("axes", {}) or {},
+        delta_vs_baseline=doc.get("delta_vs_baseline"),
+        activation_provider=doc.get("activation_provider", "cerebras:llama3.1-8b"),
+        r5_risk_score=r5,
+    )
+
+
 async def _build_marketplace_list(slug: str) -> List[MarketplaceListItem]:
     """Build the marketplace list payload for ``slug`` from MongoDB.
 
-    Joins ``quality__skill_scores`` with ``quality__probe_results`` to compute
-    the R5 §12 risk score per skill (server-side projection).
+    Reads from BOTH collections:
+    * ``quality__skill_scores`` — QO-053-F batch-runner output (skill_repo).
+    * ``quality__scores``       — runtime API evals (marketplace_slug).
+
+    Joins with ``quality__probe_results`` to compute the R5 §12 risk score.
     """
     db = get_db()
     skill_scores = db.quality__skill_scores
+    runtime_scores = db.quality__scores
     probe_results = db.quality__probe_results
+    flt = _slug_to_repo_filter(slug)
 
     items: List[MarketplaceListItem] = []
-    cursor = skill_scores.find(_slug_to_repo_filter(slug)).sort("score", -1)
-    async for doc in cursor:
-        skill_id = doc.get("skill_id") or doc.get("subject_uri") or doc.get("_id")
-        # Pull last probe results for this skill — latest evaluation only.
-        probe_cursor = probe_results.find(
-            {"skill_id": skill_id}
-        ).sort("created_at", -1).limit(20)
-        probes: List[Dict[str, Any]] = []
-        async for p in probe_cursor:
-            probes.append(p)
+    seen: set = set()
 
-        score_int = int(doc.get("score") or doc.get("current_score") or 0)
-        r5 = _derive_r5_risk_score(probes, score_int)
-
-        items.append(
-            MarketplaceListItem(
-                id=skill_id,
-                subject_uri=doc.get("subject_uri") or skill_id,
-                name=doc.get("name") or doc.get("skill_name") or skill_id,
-                slug=doc.get("slug") or skill_id,
-                category=doc.get("category"),
-                score=score_int,
-                tier=doc.get("tier", "failed"),
-                last_eval_at=doc.get("last_evaluated_at"),
-                axes=doc.get("dimensions", {}) or doc.get("axes", {}) or {},
-                delta_vs_baseline=doc.get("delta_vs_baseline"),
-                activation_provider=doc.get("activation_provider", "cerebras:llama3.1-8b"),
-                r5_risk_score=r5,
+    async def _ingest(cursor):
+        async for doc in cursor:
+            skill_id = (
+                doc.get("skill_id")
+                or doc.get("subject_uri")
+                or doc.get("target_id")
+                or doc.get("_id")
             )
-        )
+            if not skill_id or skill_id in seen:
+                continue
+            seen.add(skill_id)
+            probe_cursor = probe_results.find(
+                {"skill_id": skill_id}
+            ).sort("created_at", -1).limit(20)
+            probes: List[Dict[str, Any]] = []
+            async for p in probe_cursor:
+                probes.append(p)
+            score_int = int(doc.get("score") or doc.get("current_score") or 0)
+            r5 = _derive_r5_risk_score(probes, score_int)
+            items.append(_doc_to_marketplace_item(doc, skill_id, score_int, r5))
+
+    await _ingest(skill_scores.find(flt).sort("score", -1))
+    # Restrict runtime collection to skill targets only — the marketplace is
+    # skill-only by design (MCP/A2A live on the leaderboard, not here).
+    runtime_flt = {"$and": [flt, {"target_type": "skill"}]}
+    await _ingest(runtime_scores.find(runtime_flt).sort("current_score", -1))
 
     return items
 
