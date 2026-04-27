@@ -310,6 +310,7 @@ class EvaluationStatus(BaseModel):
     badge_url: Optional[str] = None
     result: Optional[ScoreResponse] = None
     error: Optional[str] = None
+    error_type: Optional[str] = None  # structured kind: schema_unobtainable, etc.
     duration_ms: Optional[int] = None  # wall-clock eval time
     gaming_risk: Optional[str] = None  # none/low/medium/high
     timing_anomaly: Optional[bool] = None
