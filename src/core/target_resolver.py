@@ -256,11 +256,16 @@ async def probe_langserve(base: str, *, client: httpx.AsyncClient) -> Optional[D
 
 
 async def probe_rest_chat(base: str, *, client: httpx.AsyncClient) -> Optional[DiscoveryResult]:
-    """Heuristic chat probe — POST a tiny "hi" body and accept any 2xx as
-    confirmation that there's *something* answering on this URL.
+    """Heuristic chat probe — POST ``{"message":"hi"}`` and accept only
+    JSON (not HTML) responses. Marketing sites return text/html 200 on
+    every POST and used to false-positive as REST chat — schema inference
+    then runs 3 prompts, returns garbage HTML, and refuses with
+    ``SchemaUnobtainableError``. Better to skip them at discovery so the
+    user sees ``Couldn't auto-detect`` (recoverable via type override)
+    rather than a 30-second eval-then-fail.
 
-    This is the cascade's last-resort branch (AC8 step 10). It is delibe-
-    rately permissive: schema inference will catch malformed targets at
+    This is the cascade's last-resort branch (AC8 step 10). Still permissive
+    on JSON shape — schema inference will catch malformed JSON targets at
     :meth:`RESTChatTarget.discover` time.
     """
     url = base.rstrip("/")
@@ -268,14 +273,21 @@ async def probe_rest_chat(base: str, *, client: httpx.AsyncClient) -> Optional[D
         r = await client.post(url, json={"message": "hi"})
     except httpx.HTTPError:
         return None
-    if 200 <= r.status_code < 300:
-        return DiscoveryResult(
-            target_type=TargetType.REST_CHAT,
-            endpoint_url=url,
-            raw=None,
-            note="rest_chat_heuristic",
-        )
-    return None
+    if not (200 <= r.status_code < 300):
+        return None
+    # Reject text/html — that's a marketing site, not a chat endpoint.
+    # JSON / plain-text responses are still accepted (chat APIs vary
+    # in content-type — Anthropic / OpenAI / Cohere all return JSON;
+    # some Hugging Face Spaces return text/event-stream).
+    ct = (r.headers.get("content-type") or "").lower()
+    if ct.startswith("text/html"):
+        return None
+    return DiscoveryResult(
+        target_type=TargetType.REST_CHAT,
+        endpoint_url=url,
+        raw=None,
+        note="rest_chat_heuristic",
+    )
 
 
 # ── cascade table — ORDER = specificity-priority ─────────────────────────────

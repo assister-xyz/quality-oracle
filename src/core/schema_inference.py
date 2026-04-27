@@ -105,9 +105,11 @@ async def infer_manifest(
     # ``error_type=schema_unobtainable``.
     if confidence == "low":
         raise SchemaUnobtainableError(
-            "Calibration failed on ≥2 of 3 prompts — refuse to score "
-            "this target until operator supplies an OpenAPI doc or a "
-            "longer (n=10) calibration prompt set."
+            "We sent test prompts to this URL but didn't get chat-style "
+            "responses — usually means the URL is a website or marketing "
+            "page, not an agent endpoint. To score with Laureum, paste an "
+            "MCP server URL, an A2A agent-card.json, an OpenAPI spec, or "
+            "a chat API endpoint. Need help? hello@laureum.ai"
         )
 
     # Cheap deterministic summary so tests don't require a judge fixture.
