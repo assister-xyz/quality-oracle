@@ -3,10 +3,12 @@ import hashlib
 import hmac
 import logging
 from datetime import datetime
+from typing import Optional
 from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response
+from pydantic import BaseModel
 
 from src.storage.models import (
     EvaluateRequest,
@@ -100,6 +102,61 @@ def _construct_arguments(question: str, tool: dict) -> dict:
 router = APIRouter()
 
 EVALUATION_VERSION = settings.evaluation_version
+
+
+# ── QO-065: Lead capture on failed eval ─────────────────────────────────────
+
+
+class NotifyWhenSupportedRequest(BaseModel):
+    evaluation_id: str
+    email: str
+    note: Optional[str] = None  # optional free-text from user
+
+
+class NotifyWhenSupportedResponse(BaseModel):
+    captured: bool
+    message: str = "Thanks — we'll reach out when this URL pattern is supported."
+
+
+@router.post("/notify-when-supported", response_model=NotifyWhenSupportedResponse)
+async def notify_when_supported(
+    request: NotifyWhenSupportedRequest,
+):
+    """QO-065: capture a lead when an eval fails for an unsupported URL.
+
+    Surfaced via the FE schema-unobtainable banner ("Notify me when
+    supported"). Doesn't gate on API key — frictionless on purpose.
+    Stored in `quality__failed_submissions` so Vitalii can email these
+    users back when (a) the URL pattern they pasted gets supported (e.g.
+    Gradio runner ships, gradio_deferred → real eval), or (b) the
+    Security Audit Sprint product launches and matches their intent.
+    """
+    from src.storage.mongodb import failed_submissions_col
+
+    eid = request.evaluation_id.strip()
+    email = request.email.strip().lower()
+    if not eid or "@" not in email:
+        raise HTTPException(status_code=400, detail="evaluation_id and a valid email are required")
+
+    # Pull the failed eval doc so we capture the URL + reason alongside the email.
+    eval_doc = await evaluations_col().find_one({"_id": eid})
+    if not eval_doc:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
+
+    await failed_submissions_col().insert_one({
+        "_id": str(uuid4()),
+        "evaluation_id": eid,
+        "email": email,
+        "note": request.note,
+        "target_url": eval_doc.get("target_url"),
+        "target_type": eval_doc.get("target_type"),
+        "error": eval_doc.get("error"),
+        "error_type": eval_doc.get("error_type"),
+        "status_at_capture": eval_doc.get("status"),
+        "created_at": datetime.utcnow(),
+    })
+    logger.info(f"[QO-065] Captured lead for {eid[:8]}: {email} on {eval_doc.get('target_url','?')}")
+    return NotifyWhenSupportedResponse(captured=True)
 
 
 def _get_judge() -> LLMJudge:

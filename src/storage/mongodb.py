@@ -24,6 +24,10 @@ async def connect_db():
     await _db.quality__question_banks.create_index("domain")
     await _db.quality__production_feedback.create_index("target_id")
     await _db.quality__production_feedback.create_index("created_at")
+    # Failed submission lead capture (QO-065)
+    await _db.quality__failed_submissions.create_index("evaluation_id")
+    await _db.quality__failed_submissions.create_index("email")
+    await _db.quality__failed_submissions.create_index("created_at")
     await _db.quality__payment_receipts.create_index("tx_signature", unique=True)
     await _db.quality__payment_receipts.create_index("created_at")
     await _db.quality__response_fingerprints.create_index([("target_id", 1), ("question_hash", 1)])
@@ -134,6 +138,13 @@ def api_keys_col():
 
 def feedback_col():
     return get_db().quality__production_feedback
+
+
+def failed_submissions_col():
+    """QO-065: leads captured when an eval fails (URL not supported,
+    schema unobtainable, etc.). Each row = 1 user who pasted a URL we
+    couldn't score AND opted in for follow-up."""
+    return get_db().quality__failed_submissions
 
 
 def payment_receipts_col():
