@@ -1382,6 +1382,7 @@ class Evaluator:
 
         # Activated run
         activated_scores: List[int] = []
+        activated_agent = None
         if activator_factory is not None:
             activated_agent = await _maybe_await(activator_factory())
             for q in questions:
@@ -1405,6 +1406,11 @@ class Evaluator:
         else:
             # No activator → activated_scores stays empty, score stays 0.
             logger.info("evaluate_skill: no activator_factory provided; activated_scores empty")
+
+        # Stash so token-usage block below can fold activator usage into the
+        # provider rollup (real cost on Cerebras = $0; shadow cost reflects
+        # what the same call would cost on Anthropic Sonnet at market rates).
+        result._activated_agent = activated_agent  # noqa: SLF001 (intentional)
 
         absolute = int(sum(activated_scores) / len(activated_scores)) if activated_scores else 0
         result.overall_score = absolute
@@ -1574,17 +1580,51 @@ class Evaluator:
         hash_data = f"{result.subject_uri or 'skill'}:{result.overall_score}:{result.questions_asked}:{int(time.time())}"
         result.result_hash = hashlib.sha256(hash_data.encode()).hexdigest()
 
-        # Token usage best-effort — judges contribute via collect_token_usage();
-        # activator usage is reported via target.activator.usage_summary() at
-        # the call site (api/v1/evaluate.py merges the two when persisting).
+        # Token usage — judges contribute via collect_token_usage(); fold the
+        # activator's usage_summary() into the same provider rollup so the
+        # shadow cost reflects what this skill eval would cost on a paid tier
+        # (Cerebras free → market rate Anthropic Sonnet is non-zero).
         try:
             token_data = self.collect_token_usage()
+            agent = getattr(result, "_activated_agent", None)
+            if agent is not None and hasattr(agent, "usage_summary"):
+                try:
+                    summ = agent.usage_summary()
+                    prov = getattr(summ, "provider", "") or "cerebras"
+                    in_tok = getattr(summ, "input_tokens", 0) or 0
+                    out_tok = getattr(summ, "output_tokens", 0) or 0
+                    n_calls = getattr(summ, "n_calls", 0) or 0
+                    if in_tok or out_tok or n_calls:
+                        bp = token_data.setdefault("by_provider", {})
+                        slot = bp.setdefault(prov, {"input_tokens": 0, "output_tokens": 0, "calls": 0})
+                        slot["input_tokens"] += in_tok
+                        slot["output_tokens"] += out_tok
+                        slot["calls"] += n_calls
+                        token_data["total_input_tokens"] = (token_data.get("total_input_tokens") or 0) + in_tok
+                        token_data["total_output_tokens"] = (token_data.get("total_output_tokens") or 0) + out_tok
+                        token_data.setdefault("by_phase", {})["activation"] = {
+                            "input_tokens": in_tok, "output_tokens": out_tok,
+                        }
+                        # Recompute cost rollup with activator tokens included.
+                        from src.config import calculate_total_cost
+                        cost_data = calculate_total_cost(token_data["by_provider"])
+                        token_data["cost_usd"] = cost_data["total_cost_usd"]
+                        token_data["shadow_cost_usd"] = cost_data["shadow_cost_usd"]
+                        token_data["cost_by_provider"] = cost_data["by_provider"]
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("activator usage rollup failed (non-fatal): %s", exc)
             result.token_usage = token_data
             result.cost_usd = token_data.get("cost_usd", 0.0)
             result.shadow_cost_usd = token_data.get("shadow_cost_usd", 0.0)
             _maybe_compute_cpcr(result)
         except Exception:  # pragma: no cover - token bookkeeping is non-fatal
             pass
+        # Drop the private activator handle so it doesn't leak into to_dict().
+        if hasattr(result, "_activated_agent"):
+            try:
+                delattr(result, "_activated_agent")
+            except Exception:
+                pass
 
         logger.info(
             "Skill evaluation: skill=%s level=%s absolute=%d baseline=%s delta=%s tier=%s",

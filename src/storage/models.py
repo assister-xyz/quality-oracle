@@ -249,6 +249,11 @@ class SubmitSkillRequest(BaseModel):
     body: str
     source: str = "drag"  # "drag" | "github"
     filename: Optional[str] = None
+    # Marketplace bucket override. Defaults derive from source/frontmatter:
+    # source=github → "sendai" if metadata mentions sendai, else "uploaded".
+    # Callers pass an explicit slug to group their skills (e.g. "anthropic",
+    # "personal", "team-foo") so /v1/marketplace/{slug} surfaces them.
+    marketplace_slug: Optional[str] = None
     level: EvalLevel = EvalLevel.MANIFEST
     eval_mode: EvalMode = EvalMode.VERIFIED
     webhook_url: Optional[str] = None
